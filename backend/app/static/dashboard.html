@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Security Guardrail Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260610-dashboard-grid-title-fix" />
+  </head>
+  <body class="console-body security-body dashboard-body guardchat-style">
+    <div class="console-shell">
+      <nav class="security-rail" aria-label="Product navigation">
+        <a class="rail-brand rail-link" href="/"><span>AG</span><strong>Guardrail</strong></a>
+        <a class="rail-link" href="/overview">AI Security Guardrail Manual</a>
+        <a class="rail-link active" href="/">Dashboard</a>
+        <a class="rail-link" href="/chat">GuardChat</a>
+        <a class="rail-link" href="/log">Sensitive Prompt Logs</a>
+        <details class="rail-dropdown">
+          <summary class="rail-link">Admin Configuration</summary>
+          <a class="rail-sub-link" href="/console">AI Security Console</a>
+          <a class="rail-sub-link" href="/files">Document Review Center</a>
+          <a class="rail-sub-link" href="/keys">Key Management</a>
+        </details>
+        <button class="rail-theme-toggle theme-toggle-btn" type="button" data-theme-toggle title="Toggle night mode" aria-label="Toggle night mode">Night</button>
+      </nav>
+      <header class="console-topbar">
+        <div class="topbar-brand">
+          <p class="eyebrow">Executive Oversight</p>
+          <h1 class="console-brand-title">AI Security Guardrail Dashboard</h1>
+          <p class="topbar-summary">面向管理层的实时风险态势：请求量、拦截、复核、文档风险、高风险用户和审计证据集中呈现。</p>
+        </div>
+        <div class="topbar-actions">
+          <section id="dashboard-scanner-mesh" class="dashboard-header-scanner-mesh" aria-label="Scanner statuses"></section>
+        </div>
+      </header>
+
+      <section class="risk-posture-panel" id="dashboard-risk-posture" aria-label="Request monitoring by time window"></section>
+
+      <section id="dashboard-metrics" class="stats-grid"></section>
+
+      <section class="dashboard-primary-grid">
+        <article class="risk-intelligence-panel" id="dashboard-risk-intelligence">
+          <div class="risk-intelligence-header">
+            <span>Risk Intelligence</span>
+            <button class="risk-info-btn" type="button" aria-label="Risk intelligence details">i</button>
+          </div>
+          <div id="dashboard-pie-chart"></div>
+        </article>
+
+        <div class="dashboard-trend-stack">
+          <article class="console-panel dashboard-trend-panel">
+            <div class="panel-header compact-header">
+              <div>
+                <p class="eyebrow">每日安全趋势 / Daily Security Trend</p>
+                <h2>Requests, blocks, and reviews by day</h2>
+              </div>
+              <span class="status-chip">Click line points</span>
+            </div>
+            <div id="dashboard-line-chart" class="dashboard-chart-card"></div>
+          </article>
+          <section id="daily-risk-cards" class="daily-risk-card-row" aria-label="Daily risk summary"></section>
+        </div>
+
+        <aside class="console-panel detail-panel dashboard-detail-panel">
+          <section class="detail-block">
+            <div class="panel-header compact-header">
+              <div>
+                <p class="eyebrow">详情解读面板 / Insight Detail Panel</p>
+                <h2 id="dashboard-detail-title">Select a metric or chart</h2>
+              </div>
+            </div>
+            <div class="detail-status-card">
+              <p><strong>Focus:</strong> <span id="dashboard-detail-focus">Dashboard overview</span></p>
+              <p><strong>Summary:</strong> <span id="dashboard-detail-summary">Click any icon card, trend item, use case, or incident to inspect its related details.</span></p>
+              <p><strong>Related Count:</strong> <span id="dashboard-detail-count">-</span></p>
+            </div>
+            <div id="dashboard-detail-list" class="notice-list"></div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="dashboard-secondary-grid">
+        <article class="console-panel">
+          <div class="panel-header compact-header">
+            <div>
+              <p class="eyebrow">业务应用场景 / Guardrail Use Cases</p>
+              <h2>Where guardrails are being used</h2>
+            </div>
+          </div>
+          <div id="dashboard-use-cases" class="scenario-grid"></div>
+        </article>
+
+        <article class="console-panel">
+          <div class="panel-header compact-header">
+            <div>
+              <p class="eyebrow">高风险用户聚焦 / High-Risk User Focus</p>
+              <h2>Users needing follow-up</h2>
+            </div>
+          </div>
+          <div id="risk-user-list" class="leaderboard-list"></div>
+        </article>
+      </section>
+
+      <section class="dashboard-grid dashboard-extra-grid">
+        <article class="console-panel">
+          <div class="panel-header compact-header">
+            <div>
+              <p class="eyebrow">每周趋势 / Weekly Trend</p>
+              <h2>Requests vs. interventions</h2>
+            </div>
+          </div>
+          <div id="trend-list" class="trend-list"></div>
+        </article>
+
+        <article class="console-panel">
+          <div class="panel-header compact-header">
+            <div>
+              <p class="eyebrow">治理态势 / Governance Posture</p>
+              <h2>Control coverage</h2>
+            </div>
+          </div>
+          <div id="governance-list" class="governance-list"></div>
+        </article>
+      </section>
+
+      <section class="dashboard-grid dashboard-grid-wide dashboard-extra-grid">
+        <article class="console-panel">
+          <div class="panel-header compact-header">
+            <div>
+              <p class="eyebrow">Management Actions</p>
+              <h2>Recommended governance motions</h2>
+            </div>
+          </div>
+          <div id="management-actions" class="notice-list"></div>
+        </article>
+
+        <article class="console-panel">
+          <div class="panel-header compact-header">
+            <div>
+              <p class="eyebrow">Incident Feed</p>
+              <h2>Recent review and block events</h2>
+            </div>
+          </div>
+          <div id="dashboard-incidents" class="incident-list"></div>
+        </article>
+      </section>
+    </div>
+    <script src="/static/nav-theme.js?v=20260602-guardchat-layout"></script>
+    <script src="/static/dashboard.js?v=20260603-scanner-status-green-active"></script>
+  </body>
+</html>

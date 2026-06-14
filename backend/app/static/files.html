@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document Review Center</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260603-admin-night-panels" />
+  </head>
+  <body class="console-body security-body guardchat-style admin-config-body file-admin-body">
+    <div class="console-shell">
+      <nav class="security-rail" aria-label="Product navigation">
+        <a class="rail-brand rail-link" href="/"><span>AG</span><strong>Guardrail</strong></a>
+        <a class="rail-link" href="/overview">AI Security Guardrail Manual</a>
+        <a class="rail-link" href="/">Dashboard</a>
+        <a class="rail-link" href="/chat">GuardChat</a>
+        <a class="rail-link" href="/log">Sensitive Prompt Logs</a>
+        <details class="rail-dropdown active" open>
+          <summary class="rail-link active">Admin Configuration</summary>
+          <a class="rail-sub-link" href="/console">AI Security Console</a>
+          <a class="rail-sub-link active" href="/files">Document Review Center</a>
+          <a class="rail-sub-link" href="/keys">Key Management</a>
+        </details>
+        <button class="rail-theme-toggle theme-toggle-btn" type="button" data-theme-toggle title="Toggle night mode" aria-label="Toggle night mode">Night</button>
+      </nav>
+      <header class="console-topbar">
+        <div class="topbar-brand">
+          <p class="eyebrow">Commercial Review</p>
+          <h1 class="console-brand-title">Document Review Center</h1>
+          <p class="topbar-summary">上传图片、Office 文件和 PDF，自动识别商业敏感内容、风险位置和审计证据。</p>
+        </div>
+        <div class="chip-row topbar-actions-flat">
+          <span class="status-chip status-chip-active">Ollama / qwen3.5:4b</span>
+          <a class="ghost-btn link-btn" href="/">Management View</a>
+          <a class="ghost-btn link-btn" href="/console">Operations Console</a>
+          <a class="ghost-btn link-btn" href="/overview">Demo Overview</a>
+        </div>
+      </header>
+
+      <main class="console-grid file-review-grid">
+        <section class="console-panel control-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Storage</p>
+              <h2>Default Upload Path</h2>
+            </div>
+          </div>
+
+          <form id="storage-form" class="console-chat-form">
+            <label class="field-block">
+              <span>Storage Path</span>
+              <input id="storage-path-input" class="text-input" type="text" placeholder="S:\uploads\commercial-review" />
+            </label>
+            <div class="chat-actions">
+              <span id="storage-status" class="status-text">Loading storage settings...</span>
+              <div class="inline-actions">
+                <button class="primary-btn" type="submit">Save Path</button>
+              </div>
+            </div>
+          </form>
+
+          <div class="panel-header compact-header">
+            <div>
+              <p class="eyebrow">Upload</p>
+              <h2>Automatic Review</h2>
+            </div>
+          </div>
+
+          <form id="upload-form" class="console-chat-form" enctype="multipart/form-data">
+            <div class="control-grid">
+              <label class="field-block">
+                <span>Username</span>
+                <input id="upload-username-input" class="text-input" type="text" maxlength="128" placeholder="Guest" />
+              </label>
+              <label class="field-block">
+                <span>Allowed Types</span>
+                <span class="allowed-types-chip">image / docx / xlsx / pptx / pdf</span>
+              </label>
+            </div>
+
+            <label class="field-block">
+              <span>Select File</span>
+              <input id="upload-file-input" class="text-input file-input" type="file" accept=".docx,.xlsx,.pptx,.pdf,.png,.jpg,.jpeg,.bmp,.webp" required />
+            </label>
+
+            <div class="chat-actions">
+              <span id="upload-status" class="status-text">Files are evaluated automatically after upload. Max 20MB.</span>
+              <div class="inline-actions">
+                <button class="primary-btn" type="submit">Upload And Review</button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <aside class="console-panel detail-panel">
+          <section class="detail-block">
+            <div class="panel-header compact-header">
+              <div>
+                <p class="eyebrow">Library</p>
+                <h2>Uploaded Files</h2>
+              </div>
+            </div>
+            <div id="file-list" class="scanner-list"></div>
+          </section>
+        </aside>
+      </main>
+
+      <section class="console-panel file-detail-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Assessment Detail</p>
+            <h2 id="file-detail-title">Select a reviewed file</h2>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="detail-status-card">
+            <p><strong>Status:</strong> <span id="detail-status">-</span></p>
+            <p><strong>Risk Level:</strong> <span id="detail-risk">-</span></p>
+            <p><strong>Categories:</strong> <span id="detail-categories">-</span></p>
+            <p><strong>Summary:</strong> <span id="detail-summary">-</span></p>
+          </div>
+          <div class="detail-status-card">
+            <p><strong>Path:</strong> <span id="detail-path">-</span></p>
+            <p><strong>Size:</strong> <span id="detail-size">-</span></p>
+            <p><strong>Uploaded By:</strong> <span id="detail-user">-</span></p>
+            <p><strong>Error:</strong> <span id="detail-error">-</span></p>
+          </div>
+        </div>
+
+        <div class="detail-block">
+          <div class="panel-header compact-header">
+            <div>
+              <p class="eyebrow">Hits</p>
+              <h2>Matched Locations</h2>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Risk</th>
+                  <th>Location</th>
+                  <th>Matched Text</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody id="file-hit-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="content-card">
+            <strong>Extraction Summary</strong>
+            <pre id="detail-extraction-summary" class="console-pre"></pre>
+          </div>
+          <div class="content-card">
+            <strong>Extracted Text Preview</strong>
+            <pre id="detail-extracted-text" class="console-pre"></pre>
+          </div>
+        </div>
+      </section>
+    </div>
+    <script src="/static/nav-theme.js?v=20260602-guardchat-layout"></script>
+    <script src="/static/files.js?v=20260602-file-review-fix"></script>
+  </body>
+</html>

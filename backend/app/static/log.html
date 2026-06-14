@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sensitive Prompt Logs</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260603-pwc-light-theme" />
+  </head>
+  <body class="console-body security-body guardchat-style log-guardchat-body">
+    <main class="log-shell console-shell">
+      <nav class="security-rail" aria-label="Product navigation">
+        <a class="rail-brand rail-link" href="/"><span>AG</span><strong>Guardrail</strong></a>
+        <a class="rail-link" href="/overview">AI Security Guardrail Manual</a>
+        <a class="rail-link" href="/">Dashboard</a>
+        <a class="rail-link" href="/chat">GuardChat</a>
+        <a class="rail-link active" href="/log">Sensitive Prompt Logs</a>
+        <details class="rail-dropdown">
+          <summary class="rail-link">Admin Configuration</summary>
+          <a class="rail-sub-link" href="/console">AI Security Console</a>
+          <a class="rail-sub-link" href="/files">Document Review Center</a>
+          <a class="rail-sub-link" href="/keys">Key Management</a>
+        </details>
+        <button class="rail-theme-toggle theme-toggle-btn" type="button" data-theme-toggle title="Toggle night mode" aria-label="Toggle night mode">Night</button>
+      </nav>
+      <section class="log-header">
+        <div>
+          <p class="eyebrow">High Risk Audit Log</p>
+          <h1>Sensitive Prompt Logs</h1>
+          <p>记录被确认发送或被拦截的高风险输入，用于复盘、取证和治理跟进。</p>
+        </div>
+        <div class="chip-row">
+          <a class="ghost-btn link-btn" href="/">Management View</a>
+          <a class="ghost-btn link-btn" href="/console">Operations Console</a>
+          <a class="ghost-btn link-btn" href="/files">Review Files</a>
+          <a class="ghost-btn link-btn" href="/overview">Demo Overview</a>
+        </div>
+      </section>
+
+      <section class="log-table-panel">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Username</th>
+                <th>Original Sensitive Content</th>
+                <th>Entity Types</th>
+                <th>Sent At</th>
+              </tr>
+            </thead>
+            <tbody id="log-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/static/nav-theme.js?v=20260602-guardchat-layout"></script>
+    <script src="/static/log.js?v=20260601-mission-control"></script>
+  </body>
+</html>

@@ -1,0 +1,57 @@
+# Python bytecode and local tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and dependency caches
+.venv/
+venv/
+env/
+.uv-cache/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.log
+
+# Local model/runtime caches
+.model-cache/
+.runtime-cache/
+/models/
+/checkpoints/
+backend/models/
+backend/checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.gguf
+*.model
+
+# User/test uploads and temporary artifacts
+uploaded-documents/
+test_documents/
+tmp_*
+*.tmp
+
+# Build metadata
+*.egg-info/
+build/
+dist/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

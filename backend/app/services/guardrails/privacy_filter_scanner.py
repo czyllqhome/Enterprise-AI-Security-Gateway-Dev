@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+import logging
+import shutil
+from importlib.util import find_spec
+from pathlib import Path
+from typing import Literal
+
+from ...core.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+PRIVACY_FILTER_SCANNER_NAME = "Privacy Filter"
+PRIVACY_FILTER_SOURCE = "privacy_filter"
+PRIVACY_FILTER_REPO_ID = "openai/privacy-filter"
+
+LABEL_TYPE_MAP = {
+    "private_person": "PERSON",
+    "private_address": "ADDRESS",
+    "private_email": "EMAIL_ADDRESS",
+    "private_phone": "PHONE_NUMBER",
+    "private_url": "PRIVATE_URL",
+    "private_date": "PRIVATE_DATE",
+    "account_number": "ACCOUNT_NUMBER",
+    "secret": "SECRET",
+}
+
+class PrivacyFilterScanner:
+    def __init__(self) -> None:
+        settings = get_settings()
+        self.enabled = settings.privacy_filter_enabled
+        self.auto_download = settings.privacy_filter_auto_download
+        self.model_path = Path(settings.privacy_filter_model_path).expanduser().resolve()
+        self.device = self._resolve_device(settings.privacy_filter_device)
+        self.decode_mode = self._resolve_decode_mode(settings.privacy_filter_decode_mode)
+        self.output_mode = self._resolve_output_mode(settings.privacy_filter_output_mode)
+        self.context_window_length = (
+            settings.privacy_filter_context_window_length
+            if settings.privacy_filter_context_window_length > 0
+            else None
+        )
+        self._scanner = None
+
+    @property
+    def model_reference(self) -> str:
+        return str(self.model_path)
+
+    def warmup(self) -> None:
+        if not self.enabled:
+            raise RuntimeError("Privacy Filter scanner is disabled.")
+        if find_spec("opf") is None:
+            raise RuntimeError("opf package is unavailable for Privacy Filter scanner.")
+        self._ensure_checkpoint()
+        self._scanner = self._build_scanner()
+
+    def scan(self, text: str) -> list[dict]:
+        candidate = text or ""
+        if not candidate.strip() or not self.enabled:
+            return []
+        scanner = self._scanner or self._build_scanner()
+        self._scanner = scanner
+        result = scanner.redact(candidate)
+        matches: list[dict] = []
+        for span in getattr(result, "detected_spans", ()) or ():
+            label = str(getattr(span, "label", "") or "")
+            entity_type = LABEL_TYPE_MAP.get(label)
+            if entity_type is None:
+                continue
+            start = int(getattr(span, "start", -1))
+            end = int(getattr(span, "end", -1))
+            if start < 0 or end <= start or end > len(candidate):
+                continue
+            original = str(getattr(span, "text", "") or candidate[start:end])
+            if not original:
+                continue
+            matches.append(
+                {
+                    "type": entity_type,
+                    "original": original,
+                    "start": start,
+                    "end": end,
+                    "source": PRIVACY_FILTER_SOURCE,
+                }
+            )
+        return matches
+
+    def _build_scanner(self):
+        from opf import OPF
+
+        return OPF(
+            model=str(self.model_path),
+            context_window_length=self.context_window_length,
+            device=self.device,
+            output_mode=self.output_mode,
+            decode_mode=self.decode_mode,
+        )
+
+    def _ensure_checkpoint(self) -> None:
+        if self._is_valid_checkpoint(self.model_path):
+            return
+        if not self.auto_download:
+            raise RuntimeError(
+                f"Privacy Filter checkpoint is missing at {self.model_path}; "
+                "set PRIVACY_FILTER_AUTO_DOWNLOAD=true to download it."
+            )
+        self.model_path.mkdir(parents=True, exist_ok=True)
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id=PRIVACY_FILTER_REPO_ID,
+                local_dir=str(self.model_path),
+                allow_patterns=["original/*"],
+                local_dir_use_symlinks=False,
+            )
+            self._promote_original_subtree(self.model_path)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Privacy Filter checkpoint download failed for {PRIVACY_FILTER_REPO_ID}: {exc}"
+            ) from exc
+        if not self._is_valid_checkpoint(self.model_path):
+            raise RuntimeError(f"Privacy Filter checkpoint is incomplete at {self.model_path}.")
+
+    @staticmethod
+    def _is_valid_checkpoint(path: Path) -> bool:
+        return path.is_dir() and (path / "config.json").is_file() and any(path.glob("*.safetensors"))
+
+    @staticmethod
+    def _promote_original_subtree(target: Path) -> None:
+        original_dir = target / "original"
+        if not original_dir.is_dir():
+            return
+        for path in original_dir.iterdir():
+            destination = target / path.name
+            if destination.exists():
+                continue
+            shutil.move(str(path), str(destination))
+        try:
+            original_dir.rmdir()
+        except OSError:
+            logger.debug("Privacy Filter original checkpoint directory was not empty after promotion.")
+
+    @staticmethod
+    def _resolve_device(value: str) -> Literal["cpu", "cuda"]:
+        normalized = (value or "auto").strip().lower()
+        if normalized == "cuda":
+            return "cuda"
+        if normalized == "cpu":
+            return "cpu"
+        try:
+            import torch
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+
+    @staticmethod
+    def _resolve_decode_mode(value: str) -> Literal["viterbi", "argmax"]:
+        normalized = (value or "viterbi").strip().lower()
+        if normalized in {"viterbi", "argmax"}:
+            return normalized
+        logger.warning("Invalid PRIVACY_FILTER_DECODE_MODE=%s; using viterbi.", value)
+        return "viterbi"
+
+    @staticmethod
+    def _resolve_output_mode(value: str) -> Literal["typed", "redacted"]:
+        normalized = (value or "typed").strip().lower()
+        if normalized in {"typed", "redacted"}:
+            return normalized
+        logger.warning("Invalid PRIVACY_FILTER_OUTPUT_MODE=%s; using typed.", value)
+        return "typed"

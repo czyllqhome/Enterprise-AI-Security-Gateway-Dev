@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Manage Provider Credentials</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260603-admin-night-panels" />
+  </head>
+  <body class="console-body security-body guardchat-style admin-config-body keys-admin-body">
+    <div class="console-shell keys-shell">
+      <nav class="security-rail" aria-label="Product navigation">
+        <a class="rail-brand rail-link" href="/"><span>AG</span><strong>Guardrail</strong></a>
+        <a class="rail-link" href="/overview">AI Security Guardrail Manual</a>
+        <a class="rail-link" href="/">Dashboard</a>
+        <a class="rail-link" href="/chat">GuardChat</a>
+        <a class="rail-link" href="/log">Sensitive Prompt Logs</a>
+        <details class="rail-dropdown active" open>
+          <summary class="rail-link active">Admin Configuration</summary>
+          <a class="rail-sub-link" href="/console">AI Security Console</a>
+          <a class="rail-sub-link" href="/files">Document Review Center</a>
+          <a class="rail-sub-link active" href="/keys">Key Management</a>
+        </details>
+        <button class="rail-theme-toggle theme-toggle-btn" type="button" data-theme-toggle title="Toggle night mode" aria-label="Toggle night mode">Night</button>
+      </nav>
+      <header class="console-topbar">
+        <div class="topbar-brand">
+          <p class="eyebrow">Platform Configuration</p>
+          <h1 class="console-brand-title">Manage Provider Credentials</h1>
+          <p class="topbar-summary">统一管理模型端点、默认路由和 API Key，让护栏策略与模型调用链路保持可控。</p>
+        </div>
+        <div class="chip-row topbar-actions-flat">
+          <span class="status-chip status-chip-active">Provider Credential Management</span>
+          <a class="ghost-btn link-btn" href="/">Management View</a>
+          <a class="ghost-btn link-btn" href="/console">Operations Console</a>
+          <a class="ghost-btn link-btn" href="/files">Review Files</a>
+          <a class="ghost-btn link-btn" href="/overview">Demo Overview</a>
+        </div>
+      </header>
+
+      <main class="console-grid keys-grid">
+        <section class="console-panel control-panel keys-form-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">API Keys</p>
+              <h1>Manage Provider Credentials</h1>
+            </div>
+          </div>
+
+          <form id="credential-form" class="chat-form console-chat-form">
+            <div class="control-grid">
+              <label class="field-block">
+                <span>Provider</span>
+                <select id="credential-provider" class="text-input"></select>
+              </label>
+              <label class="field-block">
+                <span>Default Model</span>
+                <input id="credential-default-model" class="text-input" type="text" placeholder="gpt-4.1-mini" />
+              </label>
+            </div>
+
+            <label class="field-block">
+              <span>Base URL</span>
+              <input id="credential-base-url" class="text-input" type="text" placeholder="https://api.openai.com/v1" />
+            </label>
+
+            <label class="field-block">
+              <span>Available Models</span>
+              <textarea id="credential-models" rows="4" placeholder="One model per line"></textarea>
+            </label>
+
+            <label class="field-block">
+              <span>API Key</span>
+              <input id="credential-api-key" class="text-input" type="password" placeholder="Paste the provider API key" />
+            </label>
+
+            <div class="chat-actions keys-actions">
+              <span id="credential-status" class="status-text credential-status-block">Select a provider to view or save its credentials.</span>
+              <div class="inline-actions keys-button-row">
+                <button id="delete-credential-btn" class="danger-btn" type="button">Delete Key</button>
+                <button class="primary-btn" type="submit">Save Credential</button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <aside class="console-panel detail-panel keys-list-panel">
+          <section class="detail-block">
+            <div class="panel-header compact-header">
+              <div>
+                <p class="eyebrow">Saved Configurations</p>
+                <h2>Configured Providers</h2>
+              </div>
+            </div>
+            <div id="credential-list" class="scanner-list"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script src="/static/nav-theme.js?v=20260602-guardchat-layout"></script>
+    <script src="/static/keys.js?v=20260601-mission-control"></script>
+  </body>
+</html>

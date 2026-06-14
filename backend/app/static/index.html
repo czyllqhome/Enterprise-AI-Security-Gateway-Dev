@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Security Guardrail Manual</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260604-manual-flow" />
+  </head>
+  <body class="console-body security-body overview-body guardchat-style manual-body">
+    <div class="console-shell">
+      <nav class="security-rail" aria-label="Product navigation">
+        <a class="rail-brand rail-link" href="/"><span>AG</span><strong>Guardrail</strong></a>
+        <a class="rail-link active" href="/overview">AI Security Guardrail Manual</a>
+        <a class="rail-link" href="/">Dashboard</a>
+        <a class="rail-link" href="/chat">GuardChat</a>
+        <a class="rail-link" href="/log">Sensitive Prompt Logs</a>
+        <details class="rail-dropdown">
+          <summary class="rail-link">Admin Configuration</summary>
+          <a class="rail-sub-link" href="/console">AI Security Console</a>
+          <a class="rail-sub-link" href="/files">Document Review Center</a>
+          <a class="rail-sub-link" href="/keys">Key Management</a>
+        </details>
+        <button class="rail-theme-toggle theme-toggle-btn" type="button" data-theme-toggle title="Toggle night mode" aria-label="Toggle night mode">Night</button>
+      </nav>
+
+      <header class="console-topbar overview-hero">
+        <div class="topbar-brand">
+          <p class="eyebrow">Guardrail Manual</p>
+          <h1 class="console-brand-title">AI Security Guardrail Manual</h1>
+          <p class="topbar-summary">
+            你可以通过本页面提供的文档了解 AI Security Guardrail 的核心功能、工作机制、
+            安全检测流程以及各模块之间如何协同保护提示词与业务数据。
+          </p>
+        </div>
+      </header>
+
+      <section class="manual-flow-panel" aria-label="AI Security Guardrail request and response flow">
+        <div class="manual-flow-line">
+          <article class="manual-flow-step manual-flow-user">
+            <span class="manual-flow-icon">U</span>
+            <div>
+              <strong>User</strong>
+              <p>Business user starts a request</p>
+            </div>
+          </article>
+          <span class="manual-flow-arrow" aria-hidden="true"></span>
+          <article class="manual-flow-step manual-flow-input">
+            <span class="manual-flow-icon">IN</span>
+            <div>
+              <strong>Input</strong>
+              <p>Prompt or uploaded file</p>
+            </div>
+          </article>
+          <span class="manual-flow-arrow" aria-hidden="true"></span>
+          <article class="manual-flow-step manual-flow-scanner">
+            <span class="manual-flow-icon">SG</span>
+            <div>
+              <strong>AI Security Guardrail Scanners</strong>
+              <p>Detect PII, secrets, topics and business risk</p>
+            </div>
+          </article>
+          <span class="manual-flow-arrow" aria-hidden="true"></span>
+          <article class="manual-flow-step manual-flow-model">
+            <span class="manual-flow-icon">LLM</span>
+            <div>
+              <strong>External LLM</strong>
+              <p>Only approved content is routed</p>
+            </div>
+          </article>
+          <span class="manual-flow-arrow" aria-hidden="true"></span>
+          <article class="manual-flow-step manual-flow-output">
+            <span class="manual-flow-icon">OUT</span>
+            <div>
+              <strong>Model Response</strong>
+              <p>Generated answer returns to the gateway</p>
+            </div>
+          </article>
+          <span class="manual-flow-arrow" aria-hidden="true"></span>
+          <article class="manual-flow-step manual-flow-scanner">
+            <span class="manual-flow-icon">SG</span>
+            <div>
+              <strong>AI Security Guardrail Scanners</strong>
+              <p>Check response before delivery</p>
+            </div>
+          </article>
+          <span class="manual-flow-arrow" aria-hidden="true"></span>
+          <article class="manual-flow-step manual-flow-user">
+            <span class="manual-flow-icon">U</span>
+            <div>
+              <strong>User</strong>
+              <p>Receives safe response or review notice</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <main class="manual-workspace" aria-label="AI Security Guardrail manual content">
+        <section class="manual-card-grid" aria-label="Manual topics">
+          <button class="manual-topic-card active" type="button" data-manual-topic="core">
+            <span>01</span>
+            <strong>核心功能</strong>
+            <p>了解系统如何提供提示词安全检测、敏感信息识别、业务风险判断和人工复核能力。</p>
+          </button>
+          <button class="manual-topic-card" type="button" data-manual-topic="mechanism">
+            <span>02</span>
+            <strong>工作机制与安全检测流程</strong>
+            <p>查看输入捕获、并行扫描、策略判定、复核确认、模型路由和审计记录的完整运行链路。</p>
+          </button>
+          <button class="manual-topic-card" type="button" data-manual-topic="pages">
+            <span>03</span>
+            <strong>功能页面介绍</strong>
+            <p>按导航顺序了解 Dashboard、GuardChat、日志页面以及 Admin configuration 下各配置页面的用途。</p>
+          </button>
+          <button class="manual-topic-card" type="button" data-manual-topic="governance">
+            <span>04</span>
+            <strong>审计与治理</strong>
+            <p>了解风险事件如何沉淀为日志、趋势、指标和后续治理动作。</p>
+          </button>
+        </section>
+
+        <section class="manual-detail-panel" aria-live="polite">
+          <div class="manual-detail-heading">
+            <p class="eyebrow" id="manual-detail-kicker">Manual Topic</p>
+            <h2 id="manual-detail-title">核心功能</h2>
+            <p id="manual-detail-summary">Loading manual topic...</p>
+          </div>
+          <div id="manual-detail-list" class="manual-detail-list"></div>
+        </section>
+      </main>
+    </div>
+    <script src="/static/nav-theme.js?v=20260602-guardchat-layout"></script>
+    <script src="/static/manual.js?v=20260603-manual-pages"></script>
+  </body>
+</html>

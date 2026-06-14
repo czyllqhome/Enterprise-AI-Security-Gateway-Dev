@@ -1,0 +1,153 @@
+import re
+
+
+CHINESE_PII_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "EMAIL_ADDRESS",
+        re.compile(r"(?<![A-Za-z0-9._%+\-])[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}(?![A-Za-z0-9._%+\-])"),
+    ),
+    ("CN_MOBILE_NUMBER", re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)")),
+    ("CHINESE_ID", re.compile(r"(?<![0-9Xx])\d{17}[0-9Xx](?![0-9Xx])")),
+    ("BANK_CARD", re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")),
+    (
+        "PERSON",
+        re.compile(r"(?:紧急联系人|联系人|姓名|员工姓名)\s*[：:]\s*(?P<value>[\u4e00-\u9fff]{1,4}(?:某|先生|女士)?)"),
+    ),
+    (
+        "ADDRESS",
+        re.compile(
+            r"(?P<value>(?:中国)?[\u4e00-\u9fff]{2,}(?:省|市|自治区|特别行政区)"
+            r"[\u4e00-\u9fff0-9A-Za-z]{1,}(?:区|县|市)"
+            r"[\u4e00-\u9fff0-9A-Za-z]+(?:路|街|道|弄|巷|号)[^\n，。；;]*)"
+        ),
+    ),
+]
+
+
+CREDENTIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("PASSWORD", re.compile(r"(?i)\b(?:password|passwd|pwd)\s*[:=]\s*(?P<value>[^\s,;]+)")),
+    (
+        "PASSWORD",
+        re.compile(
+            r"(?i)\b(?:password|passwd|pwd|passcode|login[_\s-]?password|master[_\s-]?password)"
+            r"\b(?:\s+\w+){0,4}\s*(?:is|are|was|equals?|[:=])\s*(?P<value>[^\s,;，。；]+)"
+        ),
+    ),
+    (
+        "PASSWORD",
+        re.compile(
+            r"(?:密码|登录密码|登陆密码|口令|口令密码|登录口令|登陆口令|安全口令|访问口令)"
+            r"\s*(?:是|为|[:=])\s*(?P<value>[^\s,;，。；]+)"
+        ),
+    ),
+    (
+        "API_KEY",
+        re.compile(r"(?i)\b(?:api[_-]?key|access[_-]?key|secret[_-]?key)\s*[:=]\s*(?P<value>[A-Za-z0-9_\-]{8,})"),
+    ),
+    (
+        "API_KEY",
+        re.compile(
+            r"(?i)\b(?:api[_\s-]?key|api[_\s-]?secret|service[_\s-]?key|service[_\s-]?secret)"
+            r"\b(?:\s+\w+){0,4}\s*(?:is|are|was|equals?|[:=])\s*(?P<value>[A-Za-z0-9_\-]{8,})"
+        ),
+    ),
+    (
+        "API_KEY",
+        re.compile(
+            r"(?:api\s*密钥|接口密钥|访问密钥|服务密钥|密钥)\s*(?:是|为|[:=])\s*(?P<value>[A-Za-z0-9_\-]{8,})",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "CLIENT_SECRET",
+        re.compile(
+            r"(?i)\b(?:client[_-]?secret|app[_-]?secret|consumer[_-]?secret|client[_-]?key)"
+            r"\s*(?:is|are|was|[:=])\s*(?P<value>[A-Za-z0-9_\-]{8,})"
+        ),
+    ),
+    (
+        "ACCESS_TOKEN",
+        re.compile(
+            r"(?i)\b(?:access[_\s-]?token|bearer[_\s-]?token|refresh[_\s-]?token|auth[_\s-]?token|session[_\s-]?token)"
+            r"\s*(?:is|are|was|[:=])\s*(?P<value>[A-Za-z0-9_\-]{12,})"
+        ),
+    ),
+    (
+        "ACCESS_TOKEN",
+        re.compile(
+            r"(?:访问令牌|刷新令牌|认证令牌|授权令牌|会话令牌|token)\s*(?:是|为|[:=])\s*(?P<value>[A-Za-z0-9_\-]{8,})",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "CREDENTIAL",
+        re.compile(
+            r"(?i)\b(?:credential|credentials|login[_\s-]?credential|auth[_\s-]?credential)"
+            r"\s*(?:is|are|was|[:=])\s*(?P<value>[^\s,;]{6,})"
+        ),
+    ),
+    (
+        "CREDENTIAL",
+        re.compile(r"(?:凭证|登录凭证|认证凭证|授权凭证)\s*(?:是|为|[:=])\s*(?P<value>[^\s,;，。；]{6,})"),
+    ),
+    (
+        "PRIVATE_KEY",
+        re.compile(
+            r"(?i)\b(?:private[_\s-]?key|secret[_\s-]?value|signing[_\s-]?key|rsa[_\s-]?private[_\s-]?key)"
+            r"\s*(?:is|are|was|[:=])\s*(?P<value>[A-Za-z0-9_\-\/+=]{8,})"
+        ),
+    ),
+    (
+        "PRIVATE_KEY",
+        re.compile(r"(?:私钥|签名密钥|密钥值)\s*(?:是|为|[:=])\s*(?P<value>[A-Za-z0-9_\-\/+=]{8,})"),
+    ),
+    (
+        "DATABASE_PASSWORD",
+        re.compile(
+            r"(?i)\b(?:db[_-]?password|database[_-]?password|jdbc[_-]?password|mysql[_-]?password|redis[_-]?password)"
+            r"\s*[:=]\s*(?P<value>[^\s,;]+)"
+        ),
+    ),
+    (
+        "DATABASE_USER",
+        re.compile(
+            r"(?i)\b(?:db[_-]?user|database[_-]?user|jdbc[_-]?user|mysql[_-]?user|redis[_-]?user)"
+            r"\s*[:=]\s*(?P<value>[^\s,;]+)"
+        ),
+    ),
+    (
+        "DATABASE_URL",
+        re.compile(
+            r"(?i)\b(?:database[_-]?url|jdbc[_-]?url|mongo[_-]?uri|redis[_-]?url)"
+            r"\s*[:=]\s*(?P<value>[^\s,;]+)"
+        ),
+    ),
+    (
+        "AUTHORIZATION_HEADER",
+        re.compile(r"(?i)\bAuthorization\s*:\s*Bearer\s+(?P<value>[A-Za-z0-9._\-+=\/]{12,})"),
+    ),
+    (
+        "COOKIE_SECRET",
+        re.compile(
+            r"(?i)\b(?:cookie[_-]?secret|session[_-]?secret|jwt[_-]?secret|signing[_-]?secret)"
+            r"\s*[:=]\s*(?P<value>[A-Za-z0-9_\-]{8,})"
+        ),
+    ),
+    (
+        "ENV_SECRET",
+        re.compile(
+            r"(?i)\b(?:openai_api_key|anthropic_api_key|qwen_api_key|deepseek_api_key|ollama_api_key|stripe_secret_key)"
+            r"\s*=\s*(?P<value>[^\s,;]+)"
+        ),
+    ),
+    (
+        "API_KEY",
+        re.compile(r"\b(?:sk-[A-Za-z0-9_\-]{10,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|[A-Za-z0-9_\-]{24,}\.[A-Za-z0-9_\-]{12,}\.[A-Za-z0-9_\-]{12,})\b"),
+    ),
+]
+
+
+CUSTOM_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    *CHINESE_PII_PATTERNS,
+    *CREDENTIAL_PATTERNS,
+]

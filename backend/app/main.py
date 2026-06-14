@@ -1,0 +1,117 @@
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import inspect, text
+
+from .api.routes_chat import router as chat_router
+from .api.routes_console import router as console_router
+from .api.routes_file_review import router as file_review_router
+from .api.routes_health import router as health_router
+from .api.routes_logs import router as logs_router
+from .api.routes_providers import router as providers_router
+from .api.routes_sessions import router as sessions_router
+from .core.db import Base, configure_database
+from .core.logging import configure_logging
+from .models import ChatLog, ChatMessage, ChatSession, ProviderCredential, ScanEvent, SystemSetting, UploadedFile  # noqa: F401
+from .services.guardrails.llm_guard_service import get_guardrail_service
+
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+
+
+def ensure_schema_compatibility(engine) -> None:
+    inspector = inspect(engine)
+    table_names = inspector.get_table_names()
+    if "chat_sessions" not in table_names:
+        return
+
+    column_names = {column["name"] for column in inspector.get_columns("chat_sessions")}
+    if "created_by" not in column_names:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE chat_sessions ADD COLUMN created_by VARCHAR(128) NOT NULL DEFAULT 'Guest'"),
+            )
+
+    if "scan_events" in table_names:
+        scan_event_column_names = {column["name"] for column in inspector.get_columns("scan_events")}
+        if "business_sensitive_result_json" not in scan_event_column_names:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE scan_events ADD COLUMN business_sensitive_result_json JSON"),
+                )
+        if "privacy_filter_hit_count" not in scan_event_column_names:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE scan_events ADD COLUMN privacy_filter_hit_count INTEGER NOT NULL DEFAULT 0"),
+                )
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    configure_logging()
+    engine = configure_database()
+    Base.metadata.create_all(bind=engine)
+    ensure_schema_compatibility(engine)
+    get_guardrail_service()
+    yield
+
+
+app = FastAPI(title="LLM Guard Demo", lifespan=lifespan)
+app.include_router(health_router)
+app.include_router(sessions_router)
+app.include_router(chat_router)
+app.include_router(console_router)
+app.include_router(file_review_router)
+app.include_router(logs_router)
+app.include_router(providers_router)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "dashboard.html",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/overview", include_in_schema=False)
+async def overview_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/console", include_in_schema=False)
+async def console_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "console.html")
+
+
+@app.get("/log", include_in_schema=False)
+async def log_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "log.html")
+
+
+@app.get("/keys", include_in_schema=False)
+async def keys_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "keys.html")
+
+
+@app.get("/files", include_in_schema=False)
+async def files_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "files.html")
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard_page() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "dashboard.html",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/chat", include_in_schema=False)
+async def chat_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "chat.html")
