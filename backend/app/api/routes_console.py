@@ -2,7 +2,9 @@ from sqlalchemy.orm import Session
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from ..core.auth import require_admin
 from ..core.db import get_db
+from ..models.user import User
 from ..schemas.console import (
     ConsoleScannersResponse,
     ConsoleScannersUpdateRequest,
@@ -19,19 +21,24 @@ router = APIRouter(prefix="/api/console", tags=["console"])
 @router.get("/summary", response_model=ConsoleSummaryResponse)
 def get_summary(
     username: str | None = Query(default=None, max_length=128),
+    _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> ConsoleSummaryResponse:
     return ConsoleService(db).get_summary(username=username)
 
 
 @router.get("/scanners", response_model=ConsoleScannersResponse)
-def get_scanners(db: Session = Depends(get_db)) -> ConsoleScannersResponse:
+def get_scanners(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> ConsoleScannersResponse:
     return ConsoleService(db).get_scanners()
 
 
 @router.put("/scanners", response_model=ConsoleScannersResponse)
 def update_scanners(
     payload: ConsoleScannersUpdateRequest,
+    _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> ConsoleScannersResponse:
     try:
@@ -41,10 +48,16 @@ def update_scanners(
 
 
 @router.get("/last-scan", response_model=LastScanResponse)
-def get_last_scan(db: Session = Depends(get_db)) -> LastScanResponse:
+def get_last_scan(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> LastScanResponse:
     return ConsoleService(db).get_last_scan()
 
 
 @router.get("/dashboard", response_model=ManagementDashboardResponse)
-def get_dashboard(db: Session = Depends(get_db)) -> ManagementDashboardResponse:
+def get_dashboard(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> ManagementDashboardResponse:
     return ConsoleService(db).get_management_dashboard()

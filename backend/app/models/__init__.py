@@ -7,6 +7,7 @@ from .provider_credential import ProviderCredential
 from .scan_event import ScanEvent
 from .system_setting import SystemSetting
 from .uploaded_file import UploadedFile
+from .user import User
 
 __all__ = [
     "ChatSession",
@@ -16,4 +17,5 @@ __all__ = [
     "ProviderCredential",
     "SystemSetting",
     "UploadedFile",
+    "User",
 ]

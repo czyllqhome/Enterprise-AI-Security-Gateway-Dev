@@ -14,14 +14,14 @@ class LogService:
         session_id: int,
         message_id: int,
         username: str,
-        original_sensitive_content: str,
+        sanitized_content: str,
         detected_entity_types: list[str],
     ) -> ChatLog:
         log = ChatLog(
             session_id=session_id,
             message_id=message_id,
             username=username,
-            original_sensitive_content=original_sensitive_content,
+            original_sensitive_content=sanitized_content,
             detected_entity_types=detected_entity_types,
         )
         self.db.add(log)

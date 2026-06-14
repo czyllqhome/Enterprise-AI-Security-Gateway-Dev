@@ -45,8 +45,8 @@ class ChatService:
             )
         )
 
-    def preview_message(self, payload: ChatPreviewRequest) -> ChatPreviewResponse:
-        session = self.session_service.get_session(payload.session_id)
+    def preview_message(self, payload: ChatPreviewRequest, username: str) -> ChatPreviewResponse:
+        session = self.session_service.get_session(payload.session_id, username=username)
         enabled_scanners = self.setting_service.get_enabled_scanners()
         scan = self.guardrail_service.scan_text(payload.message, enabled_scanners=enabled_scanners)
         status = (
@@ -57,7 +57,6 @@ class ChatService:
             or scan.business_sensitive_result.contains_business_sensitive
             else "clean"
         )
-        username = (payload.username or "").strip() or "Guest"
         event = self.scan_event_service.create_preview_event(
             session_id=session.id,
             username=username,
@@ -89,7 +88,7 @@ class ChatService:
                 session_id=session.id,
                 message_id=None,
                 username=username,
-                original_sensitive_content=scan.original_text,
+                sanitized_content=scan.sanitized_text,
                 detected_entity_types=detected_types,
             )
         self.db.commit()
@@ -112,8 +111,8 @@ class ChatService:
             business_sensitive_result=scan.business_sensitive_result,
         )
 
-    def confirm_message(self, payload: ChatConfirmRequest) -> AssistantReplyResponse:
-        session = self.session_service.get_session(payload.session_id)
+    def confirm_message(self, payload: ChatConfirmRequest, username: str) -> AssistantReplyResponse:
+        session = self.session_service.get_session(payload.session_id, username=username)
         enabled_scanners = (
             self.setting_service.validate_enabled_scanners(payload.enabled_scanners)
             if payload.enabled_scanners is not None
@@ -157,8 +156,8 @@ class ChatService:
             self.log_service.create_log(
                 session_id=session.id,
                 message_id=user_message.id,
-                username=(payload.username or "").strip() or "Guest",
-                original_sensitive_content=scan.original_text,
+                username=username,
+                sanitized_content=scan.sanitized_text,
                 detected_entity_types=[entity.type for entity in scan.entities],
             )
 
@@ -169,7 +168,7 @@ class ChatService:
         if event is None:
             event = self.scan_event_service.create_preview_event(
                 session_id=session.id,
-                username=(payload.username or "").strip() or "Guest",
+                username=username,
                 provider=session.provider,
                 model=session.model,
                 status="clean" if not scan.has_sensitive_data else "needs_confirmation",
@@ -192,7 +191,7 @@ class ChatService:
             assistant_raw_output=assistant_reply,
             assistant_display_output=deanonymized_reply,
         )
-        event.username = (payload.username or "").strip() or event.username
+        event.username = username
         session.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(user_message)

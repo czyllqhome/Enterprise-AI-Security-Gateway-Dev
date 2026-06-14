@@ -2,10 +2,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
+from .api.routes_admin_users import router as admin_users_router
+from .api.routes_auth import router as auth_router
 from .api.routes_chat import router as chat_router
 from .api.routes_console import router as console_router
 from .api.routes_file_review import router as file_review_router
@@ -13,9 +16,11 @@ from .api.routes_health import router as health_router
 from .api.routes_logs import router as logs_router
 from .api.routes_providers import router as providers_router
 from .api.routes_sessions import router as sessions_router
-from .core.db import Base, configure_database
+from .core.config import get_settings
+from .core.db import Base, SessionLocal, configure_database
 from .core.logging import configure_logging
-from .models import ChatLog, ChatMessage, ChatSession, ProviderCredential, ScanEvent, SystemSetting, UploadedFile  # noqa: F401
+from .models import ChatLog, ChatMessage, ChatSession, ProviderCredential, ScanEvent, SystemSetting, UploadedFile, User  # noqa: F401
+from .services.auth_service import ensure_default_admin
 from .services.guardrails.llm_guard_service import get_guardrail_service
 
 
@@ -56,12 +61,27 @@ async def lifespan(_: FastAPI):
     engine = configure_database()
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility(engine)
+    db = SessionLocal()
+    try:
+        ensure_default_admin(db)
+    finally:
+        db.close()
     get_guardrail_service()
     yield
 
 
 app = FastAPI(title="LLM Guard Demo", lifespan=lifespan)
+settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(health_router)
+app.include_router(auth_router)
+app.include_router(admin_users_router)
 app.include_router(sessions_router)
 app.include_router(chat_router)
 app.include_router(console_router)

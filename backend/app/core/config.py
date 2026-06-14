@@ -11,6 +11,15 @@ DEFAULT_DB_PATH = BASE_DIR / "ai_guard_demo.db"
 class Settings(BaseSettings):
     app_name: str = "LLM Guard Demo"
     app_env: str = Field(default="development", alias="APP_ENV")
+    app_host: str = Field(default="127.0.0.1", alias="APP_HOST")
+    app_port: int = Field(default=8002, alias="APP_PORT")
+    jwt_secret_key: str = Field(default="replace-me", alias="JWT_SECRET_KEY")
+    jwt_expires_minutes: int = Field(default=480, alias="JWT_EXPIRES_MINUTES")
+    cors_origins: str = Field(default="http://127.0.0.1:5173", alias="CORS_ORIGINS")
+    default_admin_username: str = Field(default="admin", alias="DEFAULT_ADMIN_USERNAME")
+    default_admin_password: str = Field(default="", alias="DEFAULT_ADMIN_PASSWORD")
+    default_admin_display_name: str = Field(default="Administrator", alias="DEFAULT_ADMIN_DISPLAY_NAME")
+    api_key_encryption_secret: str = Field(default="replace-me", alias="API_KEY_ENCRYPTION_SECRET")
     default_provider: str = Field(default="openai", alias="DEFAULT_PROVIDER")
     default_model: str = Field(default="gpt-4.1-mini", alias="DEFAULT_MODEL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
@@ -65,6 +74,10 @@ class Settings(BaseSettings):
     qwen3guard_model: str = Field(default="Qwen/Qwen3Guard-Gen-0.6B", alias="QWEN3GUARD_MODEL")
     qwen3guard_model_path: str = Field(default="", alias="QWEN3GUARD_MODEL_PATH")
     qwen3guard_max_new_tokens: int = Field(default=96, alias="QWEN3GUARD_MAX_NEW_TOKENS")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),

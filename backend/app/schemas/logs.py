@@ -8,7 +8,7 @@ class LogEntryResponse(BaseModel):
     session_id: int | None
     message_id: int | None
     username: str
-    original_sensitive_content: str
+    sanitized_content: str
     detected_entity_types: list[str] | None
     created_at: datetime
 

@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models.scan_event import ScanEvent
-from ..schemas.guardrail import GuardrailScanResult
+from ..schemas.guardrail import GuardrailEntity, GuardrailScanResult
 
 
 class ScanEventService:
@@ -31,16 +31,21 @@ class ScanEventService:
             llm_guard_hit_count=scan.llm_guard_hit_count,
             privacy_filter_hit_count=scan.privacy_filter_hit_count,
             custom_regex_hit_count=scan.custom_regex_hit_count,
-            original_input=scan.original_text,
+            original_input="",
             sanitized_input=scan.sanitized_text,
             scanners_json=scan.scanners,
             entity_types_json=scan.entity_types,
-            detected_entities_json=[entity.model_dump() for entity in scan.entities],
+            detected_entities_json=[self._safe_entity_dump(entity) for entity in scan.entities],
             business_sensitive_result_json=scan.business_sensitive_result.model_dump(),
         )
         self.db.add(event)
         self.db.flush()
         return event
+
+    def _safe_entity_dump(self, entity: GuardrailEntity) -> dict:
+        data = entity.model_dump()
+        data["original"] = ""
+        return data
 
     def get_event(self, event_id: int) -> ScanEvent | None:
         return self.db.scalar(select(ScanEvent).where(ScanEvent.id == event_id))

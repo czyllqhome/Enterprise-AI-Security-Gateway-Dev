@@ -38,30 +38,37 @@ class SessionService:
         self.db.refresh(session)
         return session
 
-    def list_sessions(self) -> list[ChatSession]:
+    def list_sessions(self, username: str | None = None) -> list[ChatSession]:
         stmt = select(ChatSession).order_by(desc(ChatSession.updated_at), desc(ChatSession.id))
+        if username is not None:
+            stmt = stmt.where(ChatSession.created_by == username)
         return list(self.db.scalars(stmt).all())
 
-    def get_session(self, session_id: int) -> ChatSession:
-        session = self.db.scalar(select(ChatSession).where(ChatSession.id == session_id))
-        if session is None:
-            raise SessionNotFoundError(f"Session {session_id} was not found.")
-        return session
-
-    def get_session_detail(self, session_id: int) -> ChatSession:
-        stmt = select(ChatSession).options(selectinload(ChatSession.messages)).where(ChatSession.id == session_id)
+    def get_session(self, session_id: int, username: str | None = None) -> ChatSession:
+        stmt = select(ChatSession).where(ChatSession.id == session_id)
+        if username is not None:
+            stmt = stmt.where(ChatSession.created_by == username)
         session = self.db.scalar(stmt)
         if session is None:
             raise SessionNotFoundError(f"Session {session_id} was not found.")
         return session
 
-    def delete_session(self, session_id: int) -> None:
-        session = self.get_session_detail(session_id)
+    def get_session_detail(self, session_id: int, username: str | None = None) -> ChatSession:
+        stmt = select(ChatSession).options(selectinload(ChatSession.messages)).where(ChatSession.id == session_id)
+        if username is not None:
+            stmt = stmt.where(ChatSession.created_by == username)
+        session = self.db.scalar(stmt)
+        if session is None:
+            raise SessionNotFoundError(f"Session {session_id} was not found.")
+        return session
+
+    def delete_session(self, session_id: int, username: str | None = None) -> None:
+        session = self.get_session_detail(session_id, username=username)
         self.db.delete(session)
         self.db.commit()
 
-    def update_session_settings(self, session_id: int, provider: str, model: str) -> ChatSession:
-        session = self.get_session(session_id)
+    def update_session_settings(self, session_id: int, provider: str, model: str, username: str | None = None) -> ChatSession:
+        session = self.get_session(session_id, username=username)
         provider_name = provider.strip().lower()
         provider_details = self.provider_service.get_provider(provider_name)
         allowed_models = provider_details.models or [provider_details.default_model]
