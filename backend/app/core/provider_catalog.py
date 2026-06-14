@@ -27,12 +27,22 @@ def get_provider_catalog() -> dict[str, ProviderDefinition]:
         ),
         "qwen": ProviderDefinition(
             provider="qwen",
-            display_name="阿里云百炼",
+            display_name="\u963f\u91cc\u4e91\u767e\u70bc",
             default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             default_models=(
                 "deepseek-v4-pro",
                 "qwen-plus",
                 "qwen3.6-plus",
+            ),
+        ),
+        "openrouter": ProviderDefinition(
+            provider="openrouter",
+            display_name="OpenRouter",
+            default_base_url="https://openrouter.ai/api/v1",
+            default_models=(
+                "minimax/minimax-m3",
+                "openai/gpt-5.5",
+                "anthropic/claude-fable-5",
             ),
         ),
         "ollama": ProviderDefinition(

@@ -28,8 +28,10 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto") if CryptContex
 
 
 def hash_password(password: str) -> str:
-    if pwd_context is not None:
-        return pwd_context.hash(password)
+    return _hash_pbkdf2(password)
+
+
+def _hash_pbkdf2(password: str) -> str:
     salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 260000)
     return f"pbkdf2_sha256${salt}${base64.urlsafe_b64encode(digest).decode('ascii')}"

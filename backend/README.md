@@ -1,6 +1,6 @@
-# LLM Guard Demo
+# Enterprise AI Security Gateway Backend
 
-A security-console style chat demo built with FastAPI, SQLite, SQLAlchemy, LLM Guard, and a plain HTML/CSS/JavaScript frontend. The app enforces a preview/confirm guardrail flow before a prompt reaches a configured provider and adds console-style security monitoring on top of chat.
+FastAPI backend for the Enterprise AI Security Gateway. The product UI is served by the independent React app in `../frontend`; this service should be treated as the API server only.
 
 ## Overview
 
@@ -39,21 +39,19 @@ Backend modules:
 - `app/services/console_service.py`: summary cards, scanner state, and latest scan aggregation
 - `app/services/provider_credential_service.py`: provider credentials, model lists, and key management
 
-Frontend modules:
+Frontend:
 
-- `app/static/index.html`: security console homepage
-- `app/static/styles.css`: responsive styling
-- `app/static/app.js`: console metrics, scanner state, latest scan detail, session list, modal review flow, alert toast, and chat actions
-- `app/static/log.html`: high-risk log viewer
-- `app/static/log.js`: log page rendering
-- `app/static/keys.html`: provider API key management page
-- `app/static/keys.js`: key management interactions
+- React/Vite app: `../frontend`
+- Local UI URL: `http://127.0.0.1:5173`
+- Login route: `/login`
+- User route: `/app/chat`
+- Admin route: `/admin`
 
 ## Provider Key Management
 
-Open the key management page at:
+Open the key management page in the React admin app:
 
-- `http://127.0.0.1:8002/keys`
+- `http://127.0.0.1:5173/admin/api-keys`
 
 You can:
 
@@ -134,9 +132,9 @@ This is driven by persisted `scan_events`, not only by in-memory frontend state.
 
 ## High-Risk Logs
 
-Open the log page at:
+Open the log page in the React admin app:
 
-- `http://127.0.0.1:8002/log`
+- `http://127.0.0.1:5173/admin/logs`
 
 This implementation intentionally records raw sensitive prompt content when:
 
@@ -240,7 +238,7 @@ This installs the main runtime stack, including:
 - spaCy English and Chinese models
 - ONNX runtime support for LLM Guard scanners that can use it
 
-## Run The App
+## Run The API
 
 From the `backend/` directory:
 
@@ -248,15 +246,24 @@ From the `backend/` directory:
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8002 --reload
 ```
 
-Open the demo in your browser:
+The backend root returns API metadata only:
 
 - `http://127.0.0.1:8002/`
-- `http://127.0.0.1:8002/log`
-- `http://127.0.0.1:8002/keys`
 
 Health check:
 
 - `http://127.0.0.1:8002/api/health`
+
+Run the frontend from `../frontend`:
+
+```bash
+npm install
+npm run dev
+```
+
+Open:
+
+- `http://127.0.0.1:5173/login`
 
 ## Run Tests
 

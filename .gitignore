@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tmp-pycache/
 
 # Virtual environments and dependency caches
 .venv/
@@ -23,6 +24,7 @@ env/
 *.sqlite3
 *.db-journal
 *.log
+/data/postgres/
 
 # Local model/runtime caches
 .model-cache/
@@ -49,6 +51,9 @@ tmp_*
 *.egg-info/
 build/
 dist/
+node_modules/
+frontend/dist/
+*.tsbuildinfo
 
 # OS/editor noise
 .DS_Store

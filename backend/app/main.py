@@ -1,10 +1,8 @@
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
 
 from .api.routes_admin_users import router as admin_users_router
@@ -21,11 +19,6 @@ from .core.db import Base, SessionLocal, configure_database
 from .core.logging import configure_logging
 from .models import ChatLog, ChatMessage, ChatSession, ProviderCredential, ScanEvent, SystemSetting, UploadedFile, User  # noqa: F401
 from .services.auth_service import ensure_default_admin
-from .services.guardrails.llm_guard_service import get_guardrail_service
-
-
-BASE_DIR = Path(__file__).resolve().parent
-STATIC_DIR = BASE_DIR / "static"
 
 
 def ensure_schema_compatibility(engine) -> None:
@@ -66,11 +59,10 @@ async def lifespan(_: FastAPI):
         ensure_default_admin(db)
     finally:
         db.close()
-    get_guardrail_service()
     yield
 
 
-app = FastAPI(title="LLM Guard Demo", lifespan=lifespan)
+app = FastAPI(title="Enterprise AI Security Gateway API", lifespan=lifespan)
 settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
@@ -88,50 +80,18 @@ app.include_router(console_router)
 app.include_router(file_review_router)
 app.include_router(logs_router)
 app.include_router(providers_router)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/", include_in_schema=False)
-async def index() -> FileResponse:
-    return FileResponse(
-        STATIC_DIR / "dashboard.html",
+async def api_root() -> JSONResponse:
+    return JSONResponse(
+        {
+            "service": "Enterprise AI Security Gateway API",
+            "status": "ok",
+            "frontend": "http://127.0.0.1:5173/login",
+            "admin": "http://127.0.0.1:5173/admin",
+            "docs": "/docs",
+            "health": "/api/health",
+        },
         headers={"Cache-Control": "no-store, max-age=0"},
     )
-
-
-@app.get("/overview", include_in_schema=False)
-async def overview_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
-
-
-@app.get("/console", include_in_schema=False)
-async def console_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "console.html")
-
-
-@app.get("/log", include_in_schema=False)
-async def log_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "log.html")
-
-
-@app.get("/keys", include_in_schema=False)
-async def keys_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "keys.html")
-
-
-@app.get("/files", include_in_schema=False)
-async def files_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "files.html")
-
-
-@app.get("/dashboard", include_in_schema=False)
-async def dashboard_page() -> FileResponse:
-    return FileResponse(
-        STATIC_DIR / "dashboard.html",
-        headers={"Cache-Control": "no-store, max-age=0"},
-    )
-
-
-@app.get("/chat", include_in_schema=False)
-async def chat_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "chat.html")

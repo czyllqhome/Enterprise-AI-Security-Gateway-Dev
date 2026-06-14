@@ -8,11 +8,18 @@ class LLMProviderError(Exception):
 
 
 class OpenAIClient(BaseLLMClient):
-    def __init__(self, api_key: str, base_url: str, provider_label: str = "OpenAI") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        provider_label: str = "OpenAI",
+        default_headers: dict[str, str] | None = None,
+    ) -> None:
         self.provider_label = provider_label
         self.client = OpenAI(
             api_key=api_key or None,
             base_url=base_url,
+            default_headers=default_headers,
         )
 
     def chat(self, messages: list[dict], model: str) -> str:

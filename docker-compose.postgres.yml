@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ai-guard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ai_guard
+      POSTGRES_USER: ai_guard_user
+      POSTGRES_PASSWORD: change-me-strong-password
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_guard_user -d ai_guard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
