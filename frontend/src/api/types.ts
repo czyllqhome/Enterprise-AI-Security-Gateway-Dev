@@ -51,6 +51,8 @@ export type GuardrailEntity = {
   original: string;
   masked: string;
   replacement: string;
+  start: number;
+  end: number;
   source?: string;
   sources?: string[];
 };
@@ -72,6 +74,8 @@ export type ChatPreview = {
   sanitized_message: string;
   detected_entities: GuardrailEntity[];
   has_sensitive_data: boolean;
+  privacy_filter_hit_count: number;
+  custom_regex_hit_count: number;
   scanners: string[];
   enabled_scanners: string[];
   entity_types: string[];
@@ -108,4 +112,34 @@ export type LogEntry = {
   sanitized_content: string;
   detected_entity_types: string[] | null;
   created_at: string;
+};
+
+export type TokenUsageUser = {
+  username: string;
+  request_count: number;
+  blocked_count: number;
+  review_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  max_input_tokens: number;
+  over_limit_events: number;
+  utilization_percent: number;
+  risk_level: "normal" | "watch" | "limit" | string;
+  primary_provider: string;
+  primary_model: string;
+  latest_activity: string | null;
+};
+
+export type TokenUsageMonitoring = {
+  token_limit: number;
+  encoding_name: string;
+  total_users: number;
+  total_requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  over_limit_events: number;
+  users: TokenUsageUser[];
+  trend: Array<{ label: string; input_tokens: number; output_tokens: number; total_tokens: number }>;
 };

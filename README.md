@@ -7,6 +7,12 @@ This repository is now split into two local services:
 
 The backend no longer serves the product UI from `8002`. It exposes API routes, OpenAPI docs, health checks, authentication, chat, scanner governance, logs, provider configuration, and admin user management.
 
+## Admin Token Usage Monitoring
+
+Admins can open `http://127.0.0.1:5173/admin/token-usage` to monitor estimated token usage by user. The backend endpoint is `GET /api/console/token-usage`.
+
+The current implementation follows the same local counting pattern as llm-guard's TokenLimit scanner: text is encoded with `tiktoken`, the prompt token count is compared with a 4096-token limit, and users are marked as normal, watch, or limit risk based on their largest prompt. Counts are estimated from persisted `scan_events` input text, falling back to sanitized input when raw text is not stored, plus confirmed assistant output; provider billing usage should still be read from provider response `usage` fields when exact accounting is required.
+
 ## Local Startup
 
 Backend:
@@ -29,6 +35,7 @@ Open the product at:
 - Login: `http://127.0.0.1:5173/login`
 - User chat: `http://127.0.0.1:5173/app/chat`
 - Admin platform: `http://127.0.0.1:5173/admin`
+- Token usage monitoring: `http://127.0.0.1:5173/admin/token-usage`
 
 The frontend uses `VITE_API_BASE_URL=http://127.0.0.1:8002` by default.
 

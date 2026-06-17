@@ -3,6 +3,10 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+try:
+    import tiktoken
+except ImportError:  # pragma: no cover - dependency is expected, fallback keeps admin page available.
+    tiktoken = None
 
 from ..core.config import get_settings
 from ..models.chat_log import ChatLog
@@ -23,6 +27,9 @@ from ..schemas.console import (
     LastScanResponse,
     ManagementDashboardResponse,
     ScannerStatus,
+    TokenUsageMonitoringResponse,
+    TokenUsageTrendPoint,
+    TokenUsageUserSummary,
 )
 from ..schemas.guardrail import GuardrailEntity
 from .guardrails.business_sensitive_scanner import BusinessSensitiveResult
@@ -239,6 +246,76 @@ class ConsoleService:
             governance=self._build_governance_snapshot(uploaded_files, logs),
             intervention_types=self._build_intervention_types(scan_events, uploaded_files),
             intervention_trend=self._build_intervention_trend(scan_events),
+        )
+
+    def get_token_usage_monitoring(self) -> TokenUsageMonitoringResponse:
+        token_limit = 4096
+        encoding_name = "cl100k_base"
+        scan_events = list(self.db.scalars(select(ScanEvent).order_by(ScanEvent.created_at.desc(), ScanEvent.id.desc())).all())
+        per_user: dict[str, dict] = {}
+        trend = self._build_empty_token_trend()
+
+        for event in scan_events:
+            username = event.username or "Guest"
+            bucket = per_user.setdefault(
+                username,
+                {
+                    "request_count": 0,
+                    "blocked_count": 0,
+                    "review_count": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "max_input_tokens": 0,
+                    "over_limit_events": 0,
+                    "latest_activity": None,
+                    "providers": Counter(),
+                    "models": Counter(),
+                },
+            )
+            input_text = event.original_input or event.sanitized_input or ""
+            output_text = event.assistant_raw_output or ""
+            input_tokens = self._count_tokens(input_text, event.model or self.settings.default_model)
+            output_tokens = self._count_tokens(output_text, event.model or self.settings.default_model)
+
+            bucket["request_count"] += 1
+            bucket["input_tokens"] += input_tokens
+            bucket["output_tokens"] += output_tokens
+            bucket["max_input_tokens"] = max(bucket["max_input_tokens"], input_tokens)
+            bucket["over_limit_events"] += 1 if input_tokens >= token_limit else 0
+            bucket["providers"][event.provider or self.settings.default_provider] += 1
+            bucket["models"][event.model or self.settings.default_model] += 1
+            if event.status in {"blocked", "rejected"}:
+                bucket["blocked_count"] += 1
+            if event.status in {"needs_confirmation", "confirmed_sent"}:
+                bucket["review_count"] += 1
+            if self._is_newer(event.created_at, bucket["latest_activity"]):
+                bucket["latest_activity"] = event.created_at
+
+            if event.created_at:
+                label = event.created_at.strftime("%m-%d")
+                if label in trend:
+                    trend[label]["input_tokens"] += input_tokens
+                    trend[label]["output_tokens"] += output_tokens
+                    trend[label]["total_tokens"] += input_tokens + output_tokens
+
+        users = [
+            self._build_token_usage_user(username, values, token_limit)
+            for username, values in per_user.items()
+        ]
+        users.sort(key=lambda item: (item.total_tokens, item.over_limit_events, item.max_input_tokens), reverse=True)
+        total_input_tokens = sum(user.input_tokens for user in users)
+        total_output_tokens = sum(user.output_tokens for user in users)
+        return TokenUsageMonitoringResponse(
+            token_limit=token_limit,
+            encoding_name=encoding_name,
+            total_users=len(users),
+            total_requests=sum(user.request_count for user in users),
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            total_tokens=total_input_tokens + total_output_tokens,
+            over_limit_events=sum(user.over_limit_events for user in users),
+            users=users,
+            trend=[TokenUsageTrendPoint(label=label, **values) for label, values in trend.items()],
         )
 
     def _get_consecutive_trigger_count(self, username: str | None) -> int:
@@ -628,7 +705,6 @@ class ConsoleService:
         logs: list[ChatLog],
     ) -> DashboardGovernanceSnapshot:
         scanners = self.get_scanners().scanners
-        bancode = next((scanner for scanner in scanners if scanner.id == "bancode"), None)
         configured_providers = int(self.db.scalar(select(func.count(ProviderCredential.id))) or 0)
         high_risk_files = sum(
             1 for record in uploaded_files if str((record.review_result_json or {}).get("risk_level", "low")).lower() == "high"
@@ -636,9 +712,6 @@ class ConsoleService:
         return DashboardGovernanceSnapshot(
             active_scanners=sum(1 for scanner in scanners if scanner.active),
             total_scanners=len(scanners),
-            bancode_enabled=bool(bancode and bancode.enabled),
-            bancode_available=bool(bancode and bancode.available),
-            bancode_active=bool(bancode and bancode.active),
             configured_providers=configured_providers,
             audit_logs=len(logs),
             uploaded_files=len(uploaded_files),
@@ -694,6 +767,57 @@ class ConsoleService:
         if value.tzinfo is None:
             return value
         return value.replace(tzinfo=None)
+
+    def _count_tokens(self, text: str, model: str) -> int:
+        if not text:
+            return 0
+        if tiktoken is None:
+            return max(1, len(text) // 4)
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            encoding = tiktoken.get_encoding("cl100k_base")
+        return len(encoding.encode(text))
+
+    def _build_empty_token_trend(self) -> dict[str, dict[str, int]]:
+        today = datetime.now().date()
+        return {
+            (today - timedelta(days=offset)).strftime("%m-%d"): {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            }
+            for offset in range(13, -1, -1)
+        }
+
+    def _build_token_usage_user(self, username: str, values: dict, token_limit: int) -> TokenUsageUserSummary:
+        max_input_tokens = int(values["max_input_tokens"])
+        utilization_percent = round((max_input_tokens / token_limit) * 100, 1) if token_limit else 0.0
+        risk_level = "normal"
+        if values["over_limit_events"] > 0 or utilization_percent >= 90:
+            risk_level = "limit"
+        elif utilization_percent >= 70:
+            risk_level = "watch"
+        primary_provider = values["providers"].most_common(1)[0][0] if values["providers"] else self.settings.default_provider
+        primary_model = values["models"].most_common(1)[0][0] if values["models"] else self.settings.default_model
+        input_tokens = int(values["input_tokens"])
+        output_tokens = int(values["output_tokens"])
+        return TokenUsageUserSummary(
+            username=username,
+            request_count=int(values["request_count"]),
+            blocked_count=int(values["blocked_count"]),
+            review_count=int(values["review_count"]),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            max_input_tokens=max_input_tokens,
+            over_limit_events=int(values["over_limit_events"]),
+            utilization_percent=utilization_percent,
+            risk_level=risk_level,
+            primary_provider=primary_provider,
+            primary_model=primary_model,
+            latest_activity=values["latest_activity"],
+        )
 
     def _classify_use_cases(self, text: str) -> list[str]:
         lowered = (text or "").lower()

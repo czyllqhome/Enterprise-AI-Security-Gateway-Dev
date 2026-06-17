@@ -18,6 +18,7 @@ This project demonstrates how to:
 - record high-risk sensitive prompt logs at `/log` after confirmed sends
 - record blocked source-code and prompt-injection attempts in `/log`
 - monitor console statistics, scanner status, and the latest scan detail from the homepage
+- monitor estimated per-user token usage and TokenLimit threshold pressure from the React admin app
 - show a right-bottom alert when the same user triggers scanners repeatedly
 - manage provider API keys from `/keys` and switch chat behavior by selected provider/model
 
@@ -36,7 +37,7 @@ Backend modules:
 - `app/services/chat_service.py`: preview/confirm orchestration and persistence
 - `app/services/log_service.py`: sensitive prompt log persistence
 - `app/services/scan_event_service.py`: preview/confirm scan event persistence for the console
-- `app/services/console_service.py`: summary cards, scanner state, and latest scan aggregation
+- `app/services/console_service.py`: summary cards, scanner state, latest scan aggregation, and token usage monitoring
 - `app/services/provider_credential_service.py`: provider credentials, model lists, and key management
 
 Frontend:
@@ -46,6 +47,7 @@ Frontend:
 - Login route: `/login`
 - User route: `/app/chat`
 - Admin route: `/admin`
+- Admin token usage route: `/admin/token-usage`
 
 ## Provider Key Management
 
@@ -104,6 +106,7 @@ The UI shows only scanner names and active state by default. Hover the scanner c
 - `GET /api/console/summary`
 - `GET /api/console/scanners`
 - `GET /api/console/last-scan`
+- `GET /api/console/token-usage`
 
 The homepage uses these endpoints to render:
 
@@ -116,6 +119,21 @@ The homepage uses these endpoints to render:
 - repeated-trigger alert state for the currently selected username
 
 `GET /api/console/summary` also accepts an optional `username` query parameter. The homepage uses it to calculate whether the current user has triggered scanners repeatedly.
+
+## Token Usage Monitoring
+
+Open the token usage page in the React admin app:
+
+- `http://127.0.0.1:5173/admin/token-usage`
+
+The backend endpoint `GET /api/console/token-usage` estimates token usage from persisted `scan_events`, falling back to sanitized input when raw text is not stored. It uses `tiktoken` in the same local-tokenizer style as llm-guard's TokenLimit scanner:
+
+- select the tokenizer with `encoding_for_model(model)`, falling back to `cl100k_base`
+- encode input and assistant output text locally
+- compare each prompt with the current 4096-token threshold
+- aggregate total, input, output, max prompt, limit hits, provider/model, and 14-day trend by username
+
+These numbers are intended for operational monitoring and guardrail pressure analysis. They are not guaranteed to match provider billing exactly; exact accounting should prefer provider response `usage` fields or official count-token APIs.
 
 ## Repeated Trigger Alert
 

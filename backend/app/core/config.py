@@ -5,6 +5,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = BASE_DIR.parent
 DEFAULT_DB_PATH = BASE_DIR / "ai_guard_demo.db"
 
 
@@ -32,12 +33,12 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     local_model_cache_dir: str = Field(
-        default=str(BASE_DIR / ".model-cache"),
+        default=str(PROJECT_ROOT / ".model-cache"),
         alias="LOCAL_MODEL_CACHE_DIR",
     )
     privacy_filter_enabled: bool = Field(default=True, alias="PRIVACY_FILTER_ENABLED")
     privacy_filter_model_path: str = Field(
-        default=str(BASE_DIR / ".model-cache" / "openai-privacy-filter"),
+        default=str(PROJECT_ROOT / ".model-cache" / "openai-privacy-filter"),
         alias="PRIVACY_FILTER_MODEL_PATH",
     )
     privacy_filter_auto_download: bool = Field(default=False, alias="PRIVACY_FILTER_AUTO_DOWNLOAD")

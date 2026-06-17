@@ -102,9 +102,6 @@ class DashboardIncidentItem(BaseModel):
 class DashboardGovernanceSnapshot(BaseModel):
     active_scanners: int
     total_scanners: int
-    bancode_enabled: bool
-    bancode_available: bool
-    bancode_active: bool
     configured_providers: int
     audit_logs: int
     uploaded_files: int
@@ -133,6 +130,43 @@ class DashboardInterventionTrendSeries(BaseModel):
     key: str
     label: str
     points: list[int]
+
+
+class TokenUsageUserSummary(BaseModel):
+    username: str
+    request_count: int
+    blocked_count: int
+    review_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    max_input_tokens: int
+    over_limit_events: int
+    utilization_percent: float
+    risk_level: str
+    primary_provider: str
+    primary_model: str
+    latest_activity: datetime | None
+
+
+class TokenUsageTrendPoint(BaseModel):
+    label: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+class TokenUsageMonitoringResponse(BaseModel):
+    token_limit: int
+    encoding_name: str
+    total_users: int
+    total_requests: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    over_limit_events: int
+    users: list[TokenUsageUserSummary]
+    trend: list[TokenUsageTrendPoint]
 
 
 class ManagementDashboardResponse(BaseModel):

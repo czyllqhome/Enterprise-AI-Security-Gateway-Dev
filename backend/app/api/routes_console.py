@@ -11,6 +11,7 @@ from ..schemas.console import (
     ConsoleSummaryResponse,
     LastScanResponse,
     ManagementDashboardResponse,
+    TokenUsageMonitoringResponse,
 )
 from ..services.console_service import ConsoleService
 
@@ -61,3 +62,11 @@ def get_dashboard(
     db: Session = Depends(get_db),
 ) -> ManagementDashboardResponse:
     return ConsoleService(db).get_management_dashboard()
+
+
+@router.get("/token-usage", response_model=TokenUsageMonitoringResponse)
+def get_token_usage(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> TokenUsageMonitoringResponse:
+    return ConsoleService(db).get_token_usage_monitoring()

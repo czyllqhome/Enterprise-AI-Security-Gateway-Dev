@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal
 
-from ...core.config import get_settings
+from ...core.config import PROJECT_ROOT, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +26,17 @@ LABEL_TYPE_MAP = {
     "secret": "SECRET",
 }
 
+CHINESE_NAME_HINT_RE = re.compile(r"(姓名|联系人|员工|客户|人员|负责人|申请人)")
+PHONE_HINT_RE = re.compile(r"(电话|手机|手机号|联系方式|mobile|phone|tel)", re.IGNORECASE)
+DIGIT_HEAVY_RE = re.compile(r"\+?\d(?:[\d\s\-()]){6,}\d")
+
+
 class PrivacyFilterScanner:
     def __init__(self) -> None:
         settings = get_settings()
         self.enabled = settings.privacy_filter_enabled
         self.auto_download = settings.privacy_filter_auto_download
-        self.model_path = Path(settings.privacy_filter_model_path).expanduser().resolve()
+        self.model_path = self._resolve_model_path(settings.privacy_filter_model_path)
         self.device = self._resolve_device(settings.privacy_filter_device)
         self.decode_mode = self._resolve_decode_mode(settings.privacy_filter_decode_mode)
         self.output_mode = self._resolve_output_mode(settings.privacy_filter_output_mode)
@@ -60,6 +66,11 @@ class PrivacyFilterScanner:
         scanner = self._scanner or self._build_scanner()
         self._scanner = scanner
         result = scanner.redact(candidate)
+        matches = self._extract_matches(candidate, result)
+        matches.extend(self._scan_chinese_context_probes(scanner, candidate))
+        return self._deduplicate_matches(matches)
+
+    def _extract_matches(self, candidate: str, result, *, offset: int = 0) -> list[dict]:
         matches: list[dict] = []
         for span in getattr(result, "detected_spans", ()) or ():
             label = str(getattr(span, "label", "") or "")
@@ -77,12 +88,88 @@ class PrivacyFilterScanner:
                 {
                     "type": entity_type,
                     "original": original,
-                    "start": start,
-                    "end": end,
+                    "start": offset + start,
+                    "end": offset + end,
                     "source": PRIVACY_FILTER_SOURCE,
                 }
             )
         return matches
+
+    def _scan_chinese_context_probes(self, scanner, text: str) -> list[dict]:
+        matches: list[dict] = []
+        lines = list(self._iter_nonempty_lines(text))
+        for index, (line, start) in enumerate(lines):
+            probes = self._build_context_probes(line, lines[index - 1][0] if index > 0 else "")
+            for prefix, allowed_types in probes:
+                probe_text = f"{prefix}{line}"
+                try:
+                    result = scanner.redact(probe_text)
+                except Exception:
+                    logger.debug("Privacy Filter context probe failed.", exc_info=True)
+                    continue
+                for match in self._extract_matches(probe_text, result):
+                    if match["type"] not in allowed_types:
+                        continue
+                    local_start = self._find_probe_value_offset(line, match["original"])
+                    if local_start is None:
+                        continue
+                    matches.append(
+                        {
+                            **match,
+                            "start": start + local_start,
+                            "end": start + local_start + len(match["original"]),
+                        }
+                    )
+        return matches
+
+    def _build_context_probes(self, line: str, previous_line: str) -> list[tuple[str, set[str]]]:
+        stripped = line.strip()
+        if not stripped or len(stripped) > 80:
+            return []
+
+        hints = f"{previous_line}\n{stripped}"
+        probes: list[tuple[str, set[str]]] = []
+        if CHINESE_NAME_HINT_RE.search(hints) and re.search(r"[\u4e00-\u9fff]", stripped):
+            probes.append(("Name: ", {"PERSON"}))
+        if PHONE_HINT_RE.search(hints) or DIGIT_HEAVY_RE.search(stripped):
+            probes.append(("Phone number: ", {"PHONE_NUMBER"}))
+        return probes
+
+    @staticmethod
+    def _iter_nonempty_lines(text: str):
+        cursor = 0
+        for raw_line in text.splitlines(keepends=True):
+            line = raw_line.rstrip("\r\n")
+            leading_spaces = len(line) - len(line.lstrip())
+            stripped = line.strip()
+            if stripped:
+                yield stripped, cursor + leading_spaces
+            cursor += len(raw_line)
+
+    @staticmethod
+    def _find_probe_value_offset(line: str, value: str) -> int | None:
+        if not value:
+            return None
+        index = line.find(value)
+        if index >= 0:
+            return index
+        compact_line = re.sub(r"\s+", "", line)
+        compact_value = re.sub(r"\s+", "", value)
+        if compact_value and compact_value in compact_line:
+            return line.find(value.strip()[0])
+        return None
+
+    @staticmethod
+    def _deduplicate_matches(matches: list[dict]) -> list[dict]:
+        deduplicated: list[dict] = []
+        seen: set[tuple[int, int, str, str]] = set()
+        for match in sorted(matches, key=lambda item: (item["start"], item["end"], item["type"])):
+            key = (match["start"], match["end"], match["type"], match["original"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduplicated.append(match)
+        return deduplicated
 
     def _build_scanner(self):
         from opf import OPF
@@ -124,6 +211,13 @@ class PrivacyFilterScanner:
     @staticmethod
     def _is_valid_checkpoint(path: Path) -> bool:
         return path.is_dir() and (path / "config.json").is_file() and any(path.glob("*.safetensors"))
+
+    @staticmethod
+    def _resolve_model_path(value: str) -> Path:
+        path = Path(value or "").expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return path.resolve()
 
     @staticmethod
     def _promote_original_subtree(target: Path) -> None:

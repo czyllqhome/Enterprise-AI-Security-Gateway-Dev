@@ -10,6 +10,7 @@ import { UsersPage } from "./pages/admin/UsersPage";
 import { ApiKeysPage } from "./pages/admin/ApiKeysPage";
 import { ScannersPage } from "./pages/admin/ScannersPage";
 import { LogsPage } from "./pages/admin/LogsPage";
+import { TokenUsagePage } from "./pages/admin/TokenUsagePage";
 import "./styles.css";
 
 function RootRedirect() {
@@ -71,6 +72,7 @@ const router = createBrowserRouter([
       { path: "users", element: <UsersPage /> },
       { path: "api-keys", element: <ApiKeysPage /> },
       { path: "scanners", element: <ScannersPage /> },
+      { path: "token-usage", element: <TokenUsagePage /> },
       { path: "logs", element: <LogsPage /> },
     ],
   },
