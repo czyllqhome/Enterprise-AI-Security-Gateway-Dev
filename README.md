@@ -39,6 +39,11 @@ Open the product at:
 
 The frontend uses `VITE_API_BASE_URL=http://127.0.0.1:8002` by default.
 
+Default local admin credentials:
+
+- Username: `admin`
+- Password: `password123`
+
 ## Routing Model
 
 - Unauthenticated users are sent to `/login`.

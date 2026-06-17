@@ -37,7 +37,13 @@ def ensure_default_admin(db: Session) -> None:
 
     service = UserService(db)
     username = settings.default_admin_username.strip()
-    if service.get_by_username(username) is not None:
+    existing_admin = service.get_by_username(username)
+    if existing_admin is not None:
+        existing_admin.password_hash = hash_password(settings.default_admin_password)
+        existing_admin.display_name = settings.default_admin_display_name.strip() or username
+        existing_admin.role = "admin"
+        existing_admin.is_active = True
+        db.commit()
         return
 
     admin = User(
