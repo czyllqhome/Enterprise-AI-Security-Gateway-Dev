@@ -3,7 +3,9 @@ from sqlalchemy.orm import Session
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from urllib.parse import unquote
 
+from ..core.auth import get_current_user
 from ..core.db import get_db
+from ..models.user import User
 from ..schemas.file_review import (
     FileStorageSettingsResponse,
     FileStorageSettingsUpdateRequest,
@@ -54,16 +56,16 @@ def get_uploaded_file(file_id: int, db: Session = Depends(get_db)) -> UploadedFi
 async def upload_file_for_review(
     request: Request,
     background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> UploadedFileResponse:
     try:
         form = await _parse_multipart_request(request)
         file = form.get("file")
-        username = form.get("username")
         if not isinstance(file, UploadedFilePayload):
             raise FileReviewValidationError("No file was provided.")
         service = FileReviewService(db)
-        created = service.create_uploaded_file(file, username=username if isinstance(username, str) else None)
+        created = service.create_uploaded_file(file, username=current_user.username)
         background_tasks.add_task(service.process_uploaded_file, created.id)
         return created
     except FileReviewValidationError as exc:

@@ -1,8 +1,8 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { LogOut, MessageSquarePlus, Send, ShieldAlert, Trash2 } from "lucide-react";
+import { CheckCircle2, FileText, LoaderCircle, LogOut, MessageSquarePlus, Paperclip, Send, ShieldAlert, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { apiFetch } from "../api/client";
-import type { ChatPreview, ChatSession, ChatSessionDetail, GuardrailEntity, Provider } from "../api/types";
+import type { ChatPreview, ChatSession, ChatSessionDetail, GuardrailEntity, Provider, UploadedFile } from "../api/types";
 import { useAuth } from "../state/AuthContext";
 import { formatDateTime, messageText } from "../utils/format";
 
@@ -95,6 +95,7 @@ export function ChatPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [selected, setSelected] = useState<ChatSessionDetail | null>(null);
@@ -103,6 +104,9 @@ export function ChatPage() {
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("");
   const [preview, setPreview] = useState<ChatPreview | null>(null);
+  const [attachment, setAttachment] = useState<UploadedFile | null>(null);
+  const [attachmentName, setAttachmentName] = useState("");
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const currentProvider = useMemo(() => providers.find((item) => item.provider === provider), [providers, provider]);
@@ -110,6 +114,30 @@ export function ChatPage() {
   useEffect(() => {
     bootstrap();
   }, []);
+
+  useEffect(() => {
+    if (!attachment || attachment.status !== "processing") {
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        const latest = await apiFetch<UploadedFile>(`/api/file-review/files/${attachment.id}`);
+        setAttachment(latest);
+        if (latest.status === "completed") {
+          setStatus(
+            latest.review_result?.contains_business_sensitive
+              ? `附件审核完成，发现${latest.review_result.risk_level}风险内容。`
+              : "附件安全审核完成。",
+          );
+        } else if (latest.status === "failed") {
+          setStatus(latest.error_message || "附件安全审核失败。");
+        }
+      } catch {
+        // Keep the current upload visible if a polling request briefly fails.
+      }
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [attachment]);
 
   async function bootstrap() {
     const providerData = await apiFetch<{ providers: Provider[] }>("/api/providers");
@@ -263,6 +291,56 @@ export function ChatPage() {
     });
   }
 
+  async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    setAttachment(null);
+    setAttachmentName(file.name);
+    setUploadingAttachment(true);
+    setStatus(`正在上传附件 ${file.name}...`);
+    const form = new FormData();
+    form.append("file", file);
+
+    try {
+      const uploaded = await apiFetch<UploadedFile>("/api/file-review/files/upload", {
+        method: "POST",
+        body: form,
+      });
+      setAttachment(uploaded);
+      setStatus("附件上传成功，正在进行内容提取和安全审核。");
+    } catch (exc) {
+      setAttachmentName("");
+      setStatus(exc instanceof Error ? exc.message : "附件上传失败。");
+    } finally {
+      setUploadingAttachment(false);
+    }
+  }
+
+  function clearAttachment() {
+    setAttachment(null);
+    setAttachmentName("");
+  }
+
+  function attachmentStatusText() {
+    if (uploadingAttachment) {
+      return "上传中";
+    }
+    if (!attachment || attachment.status === "processing") {
+      return "安全审核中";
+    }
+    if (attachment.status === "failed") {
+      return attachment.error_message || "审核失败";
+    }
+    if (attachment.review_result?.contains_business_sensitive) {
+      return `发现${attachment.review_result.risk_level}风险内容`;
+    }
+    return "安全审核完成";
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -406,7 +484,47 @@ export function ChatPage() {
         ) : null}
 
         <form className="composer" onSubmit={handleSubmit}>
-          <textarea ref={messageInputRef} value={message} onChange={handleMessageChange} placeholder="输入消息，系统会先进行安全扫描..." />
+          <div className="composer-input">
+            {attachmentName ? (
+              <div className={`attachment-chip ${attachment?.status === "failed" ? "failed" : ""}`}>
+                {uploadingAttachment || attachment?.status === "processing" ? (
+                  <LoaderCircle className="spin" size={18} />
+                ) : attachment?.status === "completed" ? (
+                  <CheckCircle2 size={18} />
+                ) : (
+                  <FileText size={18} />
+                )}
+                <span>
+                  <strong>{attachmentName}</strong>
+                  <small>{attachmentStatusText()}</small>
+                </span>
+                <button type="button" className="attachment-remove" onClick={clearAttachment} title="移除附件">
+                  <X size={16} />
+                </button>
+              </div>
+            ) : null}
+            <textarea ref={messageInputRef} value={message} onChange={handleMessageChange} placeholder="输入消息，系统会先进行安全扫描..." />
+            <div className="composer-actions">
+              <input
+                ref={attachmentInputRef}
+                className="visually-hidden"
+                type="file"
+                accept=".docx,.xlsx,.pptx,.pdf,.png,.jpg,.jpeg,.bmp,.webp"
+                onChange={handleAttachmentChange}
+              />
+              <button
+                type="button"
+                className="attachment-btn"
+                onClick={() => attachmentInputRef.current?.click()}
+                disabled={!selected || uploadingAttachment}
+                title="上传附件"
+              >
+                <Paperclip size={18} />
+                附件
+              </button>
+              <span>支持 Office、PDF 和图片，上传后自动进行安全审核</span>
+            </div>
+          </div>
           <button className="primary-btn" disabled={!selected || loading || !message.trim()}>
             <Send size={18} />
             发送

@@ -82,6 +82,26 @@ export type ChatPreview = {
   business_sensitive_result: BusinessSensitiveResult;
 };
 
+export type UploadedFile = {
+  id: number;
+  original_filename: string;
+  file_type: string;
+  content_type: string;
+  extension: string;
+  size_bytes: number;
+  uploaded_by: string;
+  status: "processing" | "completed" | "failed" | string;
+  extraction_summary: string | null;
+  review_result: {
+    contains_business_sensitive: boolean;
+    risk_level: "low" | "medium" | "high" | string;
+    summary: string;
+  } | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Dashboard = {
   total_requests: number;
   blocked_requests: number;
