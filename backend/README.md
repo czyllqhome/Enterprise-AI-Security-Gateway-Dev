@@ -4,33 +4,25 @@ FastAPI backend for the Enterprise AI Security Gateway. The product UI is served
 
 ## Overview
 
-This project demonstrates how to:
+The backend provides:
 
-- persist multi-turn chat sessions in SQLite
-- scan user prompts before model calls
-- detect English and Chinese sensitive data
-- detect prompt injection attempts
-- detect source code upload attempts
-- block banned topics such as weapons, self-harm, fraud, and HR discriminatory content
-- block raw sensitive content from reaching the model
-- let the user either edit the prompt or send a sanitized version
-- browse and delete historical chat sessions
-- record high-risk sensitive prompt logs at `/log` after confirmed sends
-- record blocked source-code and prompt-injection attempts in `/log`
-- monitor console statistics, scanner status, and the latest scan detail from the homepage
-- monitor estimated per-user token usage and TokenLimit threshold pressure from the React admin app
-- show a right-bottom alert when the same user triggers scanners repeatedly
-- manage provider API keys from `/keys` and switch chat behavior by selected provider/model
+- JWT authentication, admin authorization, and user management
+- multi-turn chat sessions persisted in PostgreSQL or SQLite
+- prompt scanning, sensitive-data masking, prompt-injection detection, and topic restrictions
+- OpenAI-compatible provider configuration for OpenAI, Qwen, OpenRouter, and Ollama
+- audit logs, scanner governance, management dashboards, and token usage estimates
+- Office, PDF, and image upload with extraction, OCR, and asynchronous content review
+- authenticated chat, session, provider, attachment, and administration APIs
 
 ## Architecture
 
 Backend modules:
 
-- `app/main.py`: FastAPI startup and static file serving
+- `app/main.py`: FastAPI startup, CORS, database bootstrap, and router registration
 - `app/core/`: configuration, logging, and database bootstrap
 - `app/models/`: SQLAlchemy session, message, log, and scan-event tables
 - `app/schemas/`: request and response models
-- `app/api/`: health, session, chat, console, and log endpoints
+- `app/api/`: auth, users, health, session, chat, console, file-review, log, and provider endpoints
 - `app/services/guardrails/`: LLM Guard integration, Chinese regex enhancement, masking, and normalization
 - `app/services/llm/`: base LLM interface, OpenAI-compatible client, provider factory
 - `app/services/session_service.py`: session CRUD
@@ -39,6 +31,7 @@ Backend modules:
 - `app/services/scan_event_service.py`: preview/confirm scan event persistence for the console
 - `app/services/console_service.py`: summary cards, scanner state, latest scan aggregation, and token usage monitoring
 - `app/services/provider_credential_service.py`: provider credentials, model lists, and key management
+- `app/services/file_review_service.py`: uploaded-file persistence and background review orchestration
 
 Frontend:
 
@@ -48,6 +41,91 @@ Frontend:
 - User route: `/app/chat`
 - Admin route: `/admin`
 - Admin token usage route: `/admin/token-usage`
+
+## Current Local Startup
+
+Requirements:
+
+- Python `3.11`
+- uv
+- Node.js 20+ and npm
+- Docker Desktop for the recommended PostgreSQL mode
+- Ollama with `qwen3.5:4b` for business-sensitive and file review
+
+### 1. Start PostgreSQL
+
+From the repository root:
+
+```powershell
+docker compose -f docker-compose.postgres.yml up -d
+docker compose -f docker-compose.postgres.yml ps
+```
+
+The Compose service uses:
+
+- database: `ai_guard`
+- user: `ai_guard_user`
+- password: `change-me-strong-password`
+- address: `127.0.0.1:5432`
+- persistent data: `data/postgres`
+
+### 2. Configure and run the backend
+
+From `backend/`:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Set the database URL and replace all example secrets:
+
+```env
+DATABASE_URL=postgresql+psycopg://ai_guard_user:change-me-strong-password@127.0.0.1:5432/ai_guard
+JWT_SECRET_KEY=replace-with-a-long-random-secret
+API_KEY_ENCRYPTION_SECRET=replace-with-another-long-random-secret
+DEFAULT_ADMIN_USERNAME=admin
+DEFAULT_ADMIN_PASSWORD=replace-with-a-strong-password
+CORS_ORIGINS=http://127.0.0.1:5173
+```
+
+Then install and start:
+
+```powershell
+uv sync --group dev --link-mode=copy
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8002 --reload
+```
+
+The default admin is created only when `DEFAULT_ADMIN_PASSWORD` is non-empty and the configured username does not already exist.
+
+For SQLite instead of PostgreSQL, do not start Docker and use:
+
+```env
+DATABASE_URL=sqlite:///./ai_guard_demo.db
+```
+
+When the API is launched from `backend/`, this creates `backend/ai_guard_demo.db`.
+
+### 3. Run the frontend
+
+In a separate terminal from `frontend/`:
+
+```powershell
+Copy-Item .env.example .env
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173/login`. The API metadata, docs, and health check are available at:
+
+- `http://127.0.0.1:8002/`
+- `http://127.0.0.1:8002/docs`
+- `http://127.0.0.1:8002/api/health`
+
+Verify the backend with:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8002/api/health
+```
 
 ## Provider Key Management
 
@@ -82,7 +160,7 @@ The homepage provider/model dropdowns use this saved configuration. When you swi
 7. The user can only go back and edit or send the sanitized version.
 8. `POST /api/chat/confirm` revalidates the original message and rejects raw sensitive bypass attempts.
 9. If sensitive data was detected and the user still sends the sanitized version, the backend writes a high-risk log entry containing the original raw prompt text.
-10. If a source-code upload attempt or prompt-injection attempt is blocked during preview, the backend also records it in `/log`.
+10. If a source-code upload attempt or prompt-injection attempt is blocked during preview, the backend also records it through `/api/logs`.
 11. If the assistant reply contains `[REDACTED_...]` placeholders, the backend deanonymizes the displayed reply back to the original values for the user-facing response.
 12. The homepage updates its summary cards, scanner strip, latest scan detail, and repeated-trigger alert from persisted scan events.
 
@@ -170,7 +248,7 @@ Each log entry stores:
 - `session_id`
 - `message_id`
 
-This behavior is high risk because it stores plaintext sensitive data in SQLite and displays it in the browser.
+This behavior is high risk because it stores plaintext sensitive data in the configured database and displays it in the browser.
 
 Examples of log entity types you may see:
 
@@ -178,6 +256,22 @@ Examples of log entity types you may see:
 - `CN_ID_CARD`
 - `SOURCE_CODE_ATTEMPT`
 - `PROMPT_INJECTION_ATTEMPT`
+
+## File Upload And Review
+
+The chat composer can upload `.docx`, `.xlsx`, `.pptx`, `.pdf`, `.png`, `.jpg`, `.jpeg`, `.bmp`, and `.webp` files.
+
+Main endpoints:
+
+- `POST /api/file-review/files/upload`
+- `GET /api/file-review/files`
+- `GET /api/file-review/files/{file_id}`
+- `GET /api/file-review/settings`
+- `PUT /api/file-review/settings`
+
+The upload endpoint uses the authenticated JWT user as `uploaded_by`. After storage, a FastAPI background task extracts document or OCR text and sends chunks to the local file-review scanner. The frontend polls the file detail endpoint until the status becomes `completed` or `failed`.
+
+The default upload limit is 20 MB and the default storage directory is `backend/uploaded-documents`. Attachments currently enter the independent review workflow and are not automatically appended to the model prompt.
 
 ## Environment Variables
 
@@ -189,7 +283,7 @@ Copy `.env.example` to `.env` and fill in your values.
 - `APP_PORT=8002`
 - `OPENAI_API_KEY=`
 - `OPENAI_BASE_URL=https://api.openai.com/v1`
-- `DATABASE_URL=sqlite:///./ai_guard_demo.db`
+- `DATABASE_URL=postgresql+psycopg://ai_guard_user:change-me-strong-password@127.0.0.1:5432/ai_guard`
 - `LOCAL_MODEL_CACHE_DIR=./.model-cache`
 - `PRIVACY_FILTER_ENABLED=true`
 - `PRIVACY_FILTER_MODEL_PATH=./.model-cache/openai-privacy-filter`
@@ -199,14 +293,19 @@ Copy `.env.example` to `.env` and fill in your values.
 - `BUSINESS_SENSITIVE_MODEL=qwen3.5:4b`
 - `BUSINESS_SENSITIVE_OLLAMA_URL=http://127.0.0.1:11434`
 - `BUSINESS_SENSITIVE_TIMEOUT_SECONDS=20`
+- `FILE_REVIEW_ENABLED=true`
+- `FILE_REVIEW_MODEL=qwen3.5:4b`
+- `FILE_REVIEW_OLLAMA_URL=http://127.0.0.1:11434`
+- `FILE_REVIEW_MAX_UPLOAD_MB=20`
+- `FILE_REVIEW_DEFAULT_STORAGE_PATH=./uploaded-documents`
 
-`OPENAI_API_KEY` can be left empty if you plan to manage provider keys only through `/keys`.
+`OPENAI_API_KEY` can be left empty if you plan to manage provider keys through the React admin page at `/admin/api-keys`.
 
 Note:
 
 - the app resolves `.env` from `backend/.env`
 - the app resolves SQLite to `backend/ai_guard_demo.db`
-- provider-specific keys can also be managed from `/keys` instead of environment variables
+- provider-specific keys can also be managed from `/admin/api-keys` instead of environment variables
 - LLM Guard and Hugging Face model caches are redirected into `backend/.model-cache` by default
 
 ## Local Model Cache
@@ -291,20 +390,7 @@ From the `backend/` directory:
 uv run pytest
 ```
 
-The tests use a temporary SQLite database and a mocked LLM client.
-
-To run the real local Ollama integration test, first make sure Ollama is serving `qwen3.5:4b`, then run:
-
-```bash
-$env:RUN_OLLAMA_INTEGRATION="1"
-uv run pytest tests/test_business_sensitive_integration.py -q
-```
-
-For a quick manual validation against your local Ollama service:
-
-```bash
-uv run python scripts/validate_business_sensitive_ollama.py
-```
+The pytest configuration is present in `pyproject.toml`, but the current repository does not contain committed automated test files. Until tests are added under `backend/tests/`, pytest may report that no tests were collected. Use the API health check and frontend production build for the current baseline validation.
 
 ## uv Workflow
 
@@ -338,6 +424,6 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8002
 - `LLM Guard` may still miss some Chinese entities that are reliably caught by the custom regex layer.
 - Some LLM Guard scanners can fall back to heuristic matching when model initialization is unavailable or unstable on the local machine.
 - `BanCode` and `PromptInjection` may behave differently depending on local model availability and ONNX support.
-- There is no authentication.
 - There is no streaming in v1.
-- `/log` stores and displays raw sensitive prompt content in plaintext by design for this requested high-risk mode.
+- Uploaded attachments are reviewed independently and are not automatically added to the LLM conversation context.
+- High-risk logs can store and display raw sensitive prompt content in plaintext; production deployments need a stricter retention and encryption policy.
