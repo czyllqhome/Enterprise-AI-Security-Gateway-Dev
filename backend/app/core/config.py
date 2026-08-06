@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     )
     privacy_filter_enabled: bool = Field(default=True, alias="PRIVACY_FILTER_ENABLED")
     privacy_filter_model_path: str = Field(
-        default=str(PROJECT_ROOT / ".model-cache" / "openai-privacy-filter"),
+        default=str(BASE_DIR / ".model-cache" / "openai-privacy-filter"),
         alias="PRIVACY_FILTER_MODEL_PATH",
     )
     privacy_filter_auto_download: bool = Field(default=False, alias="PRIVACY_FILTER_AUTO_DOWNLOAD")

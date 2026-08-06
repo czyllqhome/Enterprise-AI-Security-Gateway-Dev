@@ -7,6 +7,12 @@
 
 后端提供 JWT 认证、聊天会话、安全扫描、敏感信息脱敏、模型提供商配置、审计日志、管理看板、Token Usage 监控和文件内容审核。前端提供登录、用户聊天、附件上传及管理员平台。后端根路径只返回服务元数据，产品界面由 `frontend/` 提供。
 
+## 当前版本
+
+- 项目版本：`0.1.0`
+- 后端版本来源：`backend/pyproject.toml`
+- 前端版本来源：`frontend/package.json`
+
 ## 环境要求
 
 - Python `3.11`（项目要求 `>=3.11,<3.12`）
@@ -26,7 +32,7 @@ docker compose -f docker-compose.postgres.yml up -d
 docker compose -f docker-compose.postgres.yml ps
 ```
 
-默认容器使用数据库 `ai_guard`、用户 `ai_guard_user`、密码 `change-me-strong-password` 和端口 `5432`，数据持久化在 `data/postgres`。真实环境中请同时修改 Compose 和后端配置中的密码。
+默认容器使用数据库 `ai_guard`、用户 `ai_guard_user`、密码 `change-me-strong-password`，并将容器内的 PostgreSQL `5432` 端口映射到宿主机 `5433`。数据持久化在 `data/postgres`。真实环境中请同时修改 Compose 和后端配置中的密码。
 
 ### 2. 配置后端
 
@@ -37,7 +43,7 @@ Copy-Item backend/.env.example backend/.env
 至少检查或修改 `backend/.env` 中的以下配置：
 
 ```env
-DATABASE_URL=postgresql+psycopg://ai_guard_user:change-me-strong-password@127.0.0.1:5432/ai_guard
+DATABASE_URL=postgresql+psycopg://ai_guard_user:change-me-strong-password@127.0.0.1:5433/ai_guard
 JWT_SECRET_KEY=replace-with-a-long-random-secret
 API_KEY_ENCRYPTION_SECRET=replace-with-another-long-random-secret
 DEFAULT_ADMIN_USERNAME=admin

@@ -9,9 +9,11 @@ __pycache__/
 
 # Virtual environments and dependency caches
 .venv/
+.venv-runtime/
 venv/
 env/
 .uv-cache/
+.tools/
 
 # Local environment and secrets
 .env

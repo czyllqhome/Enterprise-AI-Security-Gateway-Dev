@@ -7,7 +7,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal
 
-from ...core.config import PROJECT_ROOT, get_settings
+from ...core.config import BASE_DIR, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ class PrivacyFilterScanner:
     def _resolve_model_path(value: str) -> Path:
         path = Path(value or "").expanduser()
         if not path.is_absolute():
-            path = PROJECT_ROOT / path
+            path = BASE_DIR / path
         return path.resolve()
 
     @staticmethod

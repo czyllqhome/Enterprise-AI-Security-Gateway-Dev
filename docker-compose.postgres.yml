@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: change-me-strong-password
       TZ: Asia/Shanghai
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
