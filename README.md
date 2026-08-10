@@ -153,6 +153,25 @@ uv sync --group dev --link-mode=copy
 uv run alembic upgrade head
 ```
 
+## 部署时数据库迁移
+
+部署到服务器或云主机后，先确认服务器上的 `backend/.env` 已配置生产数据库的 `DATABASE_URL`，然后在后端目录执行 Alembic 迁移：
+
+```bash
+cd /path/to/Enterprise-AI-Security-Gateway-Dev/backend
+uv sync --group dev --link-mode=copy
+uv run alembic upgrade head
+```
+
+如果依赖已经在部署流程中安装完成，可以只执行：
+
+```bash
+cd /path/to/Enterprise-AI-Security-Gateway-Dev/backend
+uv run alembic upgrade head
+```
+
+`backend/alembic/env.py` 会读取 `backend/.env` 中的 `DATABASE_URL`，因此部署时应以环境文件或环境变量指向目标 PostgreSQL 实例，不要依赖 `backend/alembic.ini` 中的本地示例地址。
+
 启动后端 API：
 
 ```powershell
