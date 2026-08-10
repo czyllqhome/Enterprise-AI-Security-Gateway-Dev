@@ -795,6 +795,28 @@ textarea:focus {
   margin-bottom: 0;
 }
 
+.scanner-runtime-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.scanner-runtime-panel h2 {
+  margin-bottom: 6px;
+}
+
+.scanner-runtime-panel p {
+  color: #586970;
+  line-height: 1.6;
+  margin-bottom: 0;
+}
+
+.scanner-runtime-controls {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(180px, 260px) minmax(180px, 260px) auto;
+}
+
 .switch input {
   display: none;
 }
@@ -1069,6 +1091,7 @@ textarea:focus {
   .two-column,
   .review-grid,
   .scanner-grid,
+  .scanner-runtime-controls,
   .form-grid,
   .composer,
   .token-summary-grid,

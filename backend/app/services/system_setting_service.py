@@ -15,10 +15,14 @@ INPUT_SCANNER_IDS = (
     "custom_regex",
 )
 
+BUSINESS_SENSITIVE_PROVIDER_IDS = ("ollama", "qwen")
+
 
 class SystemSettingService:
     FILE_REVIEW_STORAGE_PATH_KEY = "file_review.default_storage_path"
     ENABLED_SCANNERS_KEY = "guardrail.enabled_scanners"
+    BUSINESS_SENSITIVE_PROVIDER_KEY = "business_sensitive.provider"
+    BUSINESS_SENSITIVE_MODEL_KEY = "business_sensitive.model"
 
     def __init__(self, db: Session):
         self.db = db
@@ -61,6 +65,49 @@ class SystemSettingService:
         self.db.commit()
         return validated
 
+    def get_business_sensitive_config(self) -> dict[str, str]:
+        provider_record = self._get(self.BUSINESS_SENSITIVE_PROVIDER_KEY)
+        provider = self._normalize_business_sensitive_provider(
+            provider_record.value if provider_record is not None else self.settings.business_sensitive_provider
+        )
+
+        model_record = self._get(self.BUSINESS_SENSITIVE_MODEL_KEY)
+        model = (model_record.value if model_record is not None else "").strip()
+        if not model:
+            model = self.get_default_business_sensitive_model(provider)
+
+        return {"provider": provider, "model": model}
+
+    def set_business_sensitive_config(self, provider: str, model: str | None = None) -> dict[str, str]:
+        normalized_provider = self._normalize_business_sensitive_provider(provider)
+        normalized_model = (model or "").strip() or self.get_default_business_sensitive_model(normalized_provider)
+        self._set(self.BUSINESS_SENSITIVE_PROVIDER_KEY, normalized_provider)
+        self._set(self.BUSINESS_SENSITIVE_MODEL_KEY, normalized_model)
+        self.db.commit()
+        return {"provider": normalized_provider, "model": normalized_model}
+
+    def get_business_sensitive_options(self) -> list[dict[str, str]]:
+        return [
+            {
+                "provider": "ollama",
+                "model": self.get_default_business_sensitive_model("ollama"),
+                "label": "Ollama / qwen3.5:4b",
+                "description": "Local Ollama scanner runtime.",
+            },
+            {
+                "provider": "qwen",
+                "model": self.get_default_business_sensitive_model("qwen"),
+                "label": "阿里云百炼 / deepseek-v4-flash",
+                "description": "OpenAI-compatible DashScope scanner runtime.",
+            },
+        ]
+
+    def get_default_business_sensitive_model(self, provider: str) -> str:
+        normalized_provider = self._normalize_business_sensitive_provider(provider)
+        if normalized_provider == "qwen":
+            return self.settings.business_sensitive_qwen_model or "deepseek-v4-flash"
+        return self.settings.business_sensitive_model or "qwen3.5:4b"
+
     def validate_enabled_scanners(self, scanner_ids: list[str]) -> list[str]:
         seen: set[str] = set()
         normalized: list[str] = []
@@ -74,6 +121,12 @@ class SystemSettingService:
             seen.add(value)
             normalized.append(value)
         return normalized
+
+    def _normalize_business_sensitive_provider(self, provider: str) -> str:
+        value = (provider or "").strip().lower()
+        if value not in BUSINESS_SENSITIVE_PROVIDER_IDS:
+            raise ValueError(f"Unknown business-sensitive provider: {provider}")
+        return value
 
     def _set(self, key: str, value: str) -> SystemSetting:
         record = self._get(key)

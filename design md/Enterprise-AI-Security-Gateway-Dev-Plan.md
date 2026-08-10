@@ -668,7 +668,7 @@ DELETE /api/admin/users/{user_id}
 
 ## 7. 数据库改造计划
 
-从 SQLite 产品化迁移到 PostgreSQL。
+以 PostgreSQL 作为产品化数据库。
 
 新增：
 
@@ -686,7 +686,7 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/ai_guard
 改造要求：
 
 - 保留 SQLAlchemy ORM
-- 现有 model 可迁移到 PostgreSQL
+- 现有 model 保持 PostgreSQL 兼容
 - 不再依赖 `ensure_schema_compatibility` 做生产迁移
 - 生产 schema 变更必须通过 Alembic
 

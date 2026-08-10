@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..core.config import get_settings
 from ..core.db import SessionLocal
 from ..models.uploaded_file import UploadedFile
+from ..models.user import User
 from ..schemas.file_review import (
     ExtractedSegment,
     FileReviewResult,
@@ -61,13 +62,16 @@ class FileReviewService:
         self.setting_service.set_file_review_storage_path(str(path))
         return self.get_storage_settings()
 
-    def list_files(self) -> UploadedFileListResponse:
-        records = self.db.scalars(select(UploadedFile).order_by(UploadedFile.created_at.desc(), UploadedFile.id.desc())).all()
+    def list_files(self, *, current_user: User) -> UploadedFileListResponse:
+        stmt = select(UploadedFile).order_by(UploadedFile.created_at.desc(), UploadedFile.id.desc())
+        if not self._is_admin(current_user):
+            stmt = stmt.where(UploadedFile.uploaded_by == current_user.username)
+        records = self.db.scalars(stmt).all()
         return UploadedFileListResponse(files=[self._to_response(item) for item in records])
 
-    def get_file(self, file_id: int) -> UploadedFileResponse:
+    def get_file(self, file_id: int, *, current_user: User) -> UploadedFileResponse:
         record = self.db.scalar(select(UploadedFile).where(UploadedFile.id == file_id))
-        if record is None:
+        if record is None or not self._can_access_file(record, current_user):
             raise UploadedFileNotFoundError(f"Uploaded file {file_id} was not found.")
         return self._to_response(record)
 
@@ -174,6 +178,12 @@ class FileReviewService:
         if extension == ".pptx":
             return "powerpoint"
         return "file"
+
+    def _can_access_file(self, record: UploadedFile, current_user: User) -> bool:
+        return self._is_admin(current_user) or record.uploaded_by == current_user.username
+
+    def _is_admin(self, current_user: User) -> bool:
+        return current_user.role == "admin"
 
     def _normalize_extracted_segments(self, payload: Any) -> list[dict]:
         raw_segments = self._load_json_payload(payload)

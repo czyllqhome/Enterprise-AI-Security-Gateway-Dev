@@ -30,6 +30,7 @@ def get_provider_catalog() -> dict[str, ProviderDefinition]:
             display_name="\u963f\u91cc\u4e91\u767e\u70bc",
             default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             default_models=(
+                "deepseek-v4-flash",
                 "deepseek-v4-pro",
                 "qwen-plus",
                 "qwen3.6-plus",

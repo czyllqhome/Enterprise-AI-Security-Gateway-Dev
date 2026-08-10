@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BASE_DIR.parent
-DEFAULT_DB_PATH = BASE_DIR / "ai_guard_demo.db"
+DEFAULT_DATABASE_URL = "postgresql+psycopg://ai_guard_user:change-me-strong-password@127.0.0.1:5432/ai_guard"
 
 
 class Settings(BaseSettings):
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
         alias="OPENAI_BASE_URL",
     )
     database_url: str = Field(
-        default=f"sqlite:///{DEFAULT_DB_PATH.as_posix()}",
+        default=DEFAULT_DATABASE_URL,
         alias="DATABASE_URL",
     )
     local_model_cache_dir: str = Field(
@@ -47,11 +47,18 @@ class Settings(BaseSettings):
     privacy_filter_output_mode: str = Field(default="typed", alias="PRIVACY_FILTER_OUTPUT_MODE")
     privacy_filter_context_window_length: int = Field(default=0, alias="PRIVACY_FILTER_CONTEXT_WINDOW_LENGTH")
     business_sensitive_enabled: bool = Field(default=True, alias="BUSINESS_SENSITIVE_ENABLED")
+    business_sensitive_provider: str = Field(default="ollama", alias="BUSINESS_SENSITIVE_PROVIDER")
     business_sensitive_model: str = Field(default="qwen3.5:4b", alias="BUSINESS_SENSITIVE_MODEL")
     business_sensitive_ollama_url: str = Field(
         default="http://127.0.0.1:11434",
         alias="BUSINESS_SENSITIVE_OLLAMA_URL",
     )
+    business_sensitive_qwen_model: str = Field(default="deepseek-v4-flash", alias="BUSINESS_SENSITIVE_QWEN_MODEL")
+    business_sensitive_qwen_base_url: str = Field(
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        alias="BUSINESS_SENSITIVE_QWEN_BASE_URL",
+    )
+    business_sensitive_qwen_api_key: str = Field(default="", alias="BUSINESS_SENSITIVE_QWEN_API_KEY")
     business_sensitive_timeout_seconds: float = Field(
         default=20.0,
         alias="BUSINESS_SENSITIVE_TIMEOUT_SECONDS",

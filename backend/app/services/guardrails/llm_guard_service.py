@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlparse
 
+from sqlalchemy.orm import Session
+
 from ...core.model_cache import configure_local_model_cache
 from ...schemas.guardrail import GuardrailEntity, GuardrailScanResult
 from ..system_setting_service import INPUT_SCANNER_IDS
@@ -210,7 +212,12 @@ class GuardrailService:
         self._ban_topics_scanner = self._qwen3guard_scanner
         self._business_sensitive_scanner = self._build_business_sensitive_scanner()
 
-    def scan_text(self, text: str, enabled_scanners: list[str] | None = None) -> GuardrailScanResult:
+    def scan_text(
+        self,
+        text: str,
+        enabled_scanners: list[str] | None = None,
+        db: Session | None = None,
+    ) -> GuardrailScanResult:
         enabled = self._normalize_enabled_scanners(enabled_scanners)
         enabled_set = set(enabled)
         qwen3guard_moderation = None
@@ -229,7 +236,7 @@ class GuardrailService:
             else []
         )
         business_sensitive_result = (
-            self._scan_with_business_sensitive(text)
+            self._scan_with_business_sensitive(text, db=db)
             if "business_sensitive" in enabled_set
             else BusinessSensitiveScanner.fallback_result(summary="Business Sensitive scanner disabled.")
         )
@@ -317,18 +324,21 @@ class GuardrailService:
         reason = f"{chinese_reason}\n{english_reason}"
         return f"{current}\n{reason}".strip() if current else reason
 
-    def get_scanner_availability(self) -> dict[str, bool]:
+    def get_scanner_availability(self, db: Session | None = None) -> dict[str, bool]:
         return {
             "privacy_filter": self._privacy_filter_scanner is not None,
             "bancode": True,
             "prompt_injection": self._qwen3guard_scanner is not None,
             "ban_topics": self._qwen3guard_scanner is not None,
-            "business_sensitive": self._business_sensitive_scanner is not None,
+            "business_sensitive": (
+                self._business_sensitive_scanner is not None
+                and self._business_sensitive_scanner.is_runtime_available(db=db)
+            ),
             "custom_regex": True,
             "deanonymize": Deanonymize is not None and Vault is not None,
         }
 
-    def get_scanner_runtime_details(self) -> dict[str, str]:
+    def get_scanner_runtime_details(self, db: Session | None = None) -> dict[str, str]:
         prompt_injection_model = getattr(self._qwen3guard_scanner, "model_reference", None) or "Qwen/Qwen3Guard-Gen-0.6B"
         bancode_model = self._get_model_path(self._bancode_scanner) or "LLM Guard BanCode heuristic fallback"
         ban_topics_model = getattr(self._qwen3guard_scanner, "model_reference", None) or "Qwen/Qwen3Guard-Gen-0.6B"
@@ -356,9 +366,9 @@ class GuardrailService:
                 "Detects PII and secrets across 8 labels; Custom Regex remains as the offline fallback."
             ),
             "Business Sensitive": (
-                "Model: local Ollama "
-                f"{getattr(self._business_sensitive_scanner, 'model', 'qwen3.5:4b')}. "
-                "Structured JSON is validated with safe fallback behavior."
+                self._business_sensitive_scanner.describe_runtime(db=db)
+                if self._business_sensitive_scanner is not None
+                else "Business-sensitive scanner is unavailable."
             ),
             "Custom Regex": (
                 "Model: none. "
@@ -370,7 +380,7 @@ class GuardrailService:
             ),
             "Sensitive Logging": (
                 "Model: none. "
-                "Triggered prompts are persisted to SQLite and the /log console."
+                "Triggered prompts are persisted to PostgreSQL and the /log console."
             ),
         }
 
@@ -606,10 +616,10 @@ class GuardrailService:
                 deduplicated.append(topic)
         return deduplicated
 
-    def _scan_with_business_sensitive(self, text: str):
+    def _scan_with_business_sensitive(self, text: str, db: Session | None = None):
         if self._business_sensitive_scanner is None:
             return BusinessSensitiveScanner.fallback_result(summary="Business sensitivity scanner unavailable.")
-        return self._business_sensitive_scanner.scan(text)
+        return self._business_sensitive_scanner.scan(text, db=db)
 
     def _apply_business_sensitive_policy(self, text: str, entities: list[GuardrailEntity], result):
         if not getattr(result, "contains_business_sensitive", False):

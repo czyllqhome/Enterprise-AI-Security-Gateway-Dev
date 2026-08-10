@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../../api/client";
-import type { Scanner } from "../../api/types";
+import type { BusinessSensitiveScannerConfig, ConsoleScannersResponse, Scanner } from "../../api/types";
 import { PageTitle } from "./DashboardPage";
 
 const toggleableScanners = new Set(["bancode", "prompt_injection", "ban_topics", "privacy_filter", "business_sensitive", "custom_regex"]);
@@ -8,6 +8,9 @@ const toggleableScanners = new Set(["bancode", "prompt_injection", "ban_topics",
 export function ScannersPage() {
   const [scanners, setScanners] = useState<Scanner[]>([]);
   const [enabled, setEnabled] = useState<string[]>([]);
+  const [businessConfig, setBusinessConfig] = useState<BusinessSensitiveScannerConfig | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<"ollama" | "qwen">("ollama");
+  const [selectedModel, setSelectedModel] = useState("");
   const [status, setStatus] = useState("");
 
   useEffect(() => {
@@ -15,9 +18,17 @@ export function ScannersPage() {
   }, []);
 
   async function loadScanners() {
-    const data = await apiFetch<{ scanners: Scanner[]; enabled_scanners: string[] }>("/api/console/scanners");
+    hydrateScanners(await apiFetch<ConsoleScannersResponse>("/api/console/scanners"));
+  }
+
+  function hydrateScanners(data: ConsoleScannersResponse) {
     setScanners(data.scanners);
     setEnabled(data.enabled_scanners);
+    if (data.business_sensitive_config) {
+      setBusinessConfig(data.business_sensitive_config);
+      setSelectedProvider(data.business_sensitive_config.provider);
+      setSelectedModel(data.business_sensitive_config.model);
+    }
   }
 
   async function setScannerEnabled(scannerId: string, isEnabled: boolean) {
@@ -27,18 +38,68 @@ export function ScannersPage() {
     } else {
       nextEnabled.delete(scannerId);
     }
-    const data = await apiFetch<{ scanners: Scanner[]; enabled_scanners: string[] }>("/api/console/scanners", {
+    const data = await apiFetch<ConsoleScannersResponse>("/api/console/scanners", {
       method: "PUT",
       body: JSON.stringify({ enabled_scanners: [...nextEnabled] }),
     });
-    setScanners(data.scanners);
-    setEnabled(data.enabled_scanners);
-    setStatus("Scanner 开关已更新。");
+    hydrateScanners(data);
+    setStatus("Scanner switch updated.");
   }
+
+  async function saveBusinessSensitiveConfig() {
+    const data = await apiFetch<ConsoleScannersResponse>("/api/console/scanners/business-sensitive", {
+      method: "PUT",
+      body: JSON.stringify({ provider: selectedProvider, model: selectedModel }),
+    });
+    hydrateScanners(data);
+    setStatus("Business Sensitive runtime updated.");
+  }
+
+  function setBusinessProvider(provider: "ollama" | "qwen") {
+    setSelectedProvider(provider);
+    const option = businessConfig?.options.find((item) => item.provider === provider);
+    if (option) {
+      setSelectedModel(option.model);
+    }
+  }
+
+  const businessOptions = businessConfig?.options ?? [];
+  const businessModelOptions = businessOptions.filter((option) => option.provider === selectedProvider);
 
   return (
     <>
-      <PageTitle title="Scanners" subtitle="区分 enabled、available、active，并显示模型或检测机制" />
+      <PageTitle title="Scanners" subtitle="Manage enabled, available, and active scanner runtimes." />
+      {businessConfig ? (
+        <section className="panel scanner-runtime-panel">
+          <div>
+            <h2>Business Sensitive Runtime</h2>
+            <p>{businessConfig.detail}</p>
+          </div>
+          <div className="scanner-runtime-controls">
+            <label>
+              Provider
+              <select value={selectedProvider} onChange={(event) => setBusinessProvider(event.target.value as "ollama" | "qwen")}>
+                {businessOptions.map((option) => (
+                  <option key={option.provider} value={option.provider}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Model
+              <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
+                {businessModelOptions.map((option) => (
+                  <option key={`${option.provider}:${option.model}`} value={option.model}>{option.model}</option>
+                ))}
+              </select>
+            </label>
+            <button className="primary-btn" type="button" onClick={saveBusinessSensitiveConfig}>Save</button>
+          </div>
+          <div className="entity-strip">
+            <span className={businessConfig.configured ? "ok" : "warn"}>runtime configured: {String(businessConfig.configured)}</span>
+            <span>selected: {businessConfig.provider}/{businessConfig.model}</span>
+          </div>
+        </section>
+      ) : null}
       <section className="scanner-grid">
         {scanners.map((scanner) => (
           <article className="scanner-card" key={scanner.id}>

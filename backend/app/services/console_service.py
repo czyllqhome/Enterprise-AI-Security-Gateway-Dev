@@ -14,6 +14,7 @@ from ..models.provider_credential import ProviderCredential
 from ..models.scan_event import ScanEvent
 from ..models.uploaded_file import UploadedFile
 from ..schemas.console import (
+    BusinessSensitiveScannerConfig,
     ConsoleScannersResponse,
     ConsoleSummaryResponse,
     DashboardGovernanceSnapshot,
@@ -90,8 +91,8 @@ class ConsoleService:
         )
 
     def get_scanners(self) -> ConsoleScannersResponse:
-        availability = self.guardrail_service.get_scanner_availability()
-        runtime_details = self.guardrail_service.get_scanner_runtime_details()
+        availability = self.guardrail_service.get_scanner_availability(db=self.db)
+        runtime_details = self.guardrail_service.get_scanner_runtime_details(db=self.db)
         enabled_scanners = self.setting_service.get_enabled_scanners()
         enabled_set = set(enabled_scanners)
         scanners = [
@@ -152,10 +153,32 @@ class ConsoleService:
                 detail=runtime_details["Deanonymize"],
             ),
         ]
-        return ConsoleScannersResponse(scanners=scanners, enabled_scanners=enabled_scanners)
+        return ConsoleScannersResponse(
+            scanners=scanners,
+            enabled_scanners=enabled_scanners,
+            business_sensitive_config=self.get_business_sensitive_config(),
+        )
 
     def update_scanners(self, enabled_scanners: list[str]) -> ConsoleScannersResponse:
         self.setting_service.set_enabled_scanners(enabled_scanners)
+        return self.get_scanners()
+
+    def get_business_sensitive_config(self) -> BusinessSensitiveScannerConfig:
+        config = self.setting_service.get_business_sensitive_config()
+        availability = self.guardrail_service.get_scanner_availability(db=self.db)
+        runtime_details = self.guardrail_service.get_scanner_runtime_details(db=self.db)
+        return BusinessSensitiveScannerConfig(
+            provider=config["provider"],
+            model=config["model"],
+            options=self.setting_service.get_business_sensitive_options(),
+            configured=availability["business_sensitive"],
+            detail=runtime_details["Business Sensitive"],
+        )
+
+    def update_business_sensitive_config(self, provider: str, model: str | None = None) -> ConsoleScannersResponse:
+        self.setting_service.set_business_sensitive_config(provider=provider, model=model)
+        get_guardrail_service.cache_clear()
+        self.guardrail_service = get_guardrail_service()
         return self.get_scanners()
 
     def get_last_scan(self) -> LastScanResponse:

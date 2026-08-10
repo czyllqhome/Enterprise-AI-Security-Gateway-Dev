@@ -19,8 +19,7 @@ def configure_database(database_url: str | None = None) -> Engine:
     global engine
 
     resolved_url = database_url or get_settings().database_url
-    connect_args = {"check_same_thread": False} if resolved_url.startswith("sqlite") else {}
-    engine = create_engine(resolved_url, connect_args=connect_args)
+    engine = create_engine(resolved_url)
     SessionLocal.configure(bind=engine)
     return engine
 

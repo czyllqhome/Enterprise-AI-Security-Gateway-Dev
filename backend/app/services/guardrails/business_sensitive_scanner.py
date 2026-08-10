@@ -7,8 +7,10 @@ from typing import Literal
 from urllib import error, request
 
 from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy.orm import Session
 
 from ...core.config import get_settings
+from ..provider_credential_service import ProviderCredentialNotFoundError, ProviderCredentialService
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +28,17 @@ BUSINESS_SENSITIVE_CATEGORIES = (
     "insurance_party_data",
 )
 BUSINESS_CATEGORY_DESCRIPTIONS = (
-    "- contract_terms: 合同条款、付款条件、违约责任、交付条件",
-    "- pricing: 价格、报价、折扣、成本、预算金额",
-    "- product_spec: 内部产品编号、料号、规格、未公开参数",
-    "- commercial_plan: 投标方案、销售策略、客户拓展计划、内部商务决策",
-    "- customer_data: 客户名单、商务联系人、采购意向",
-    "- insurance_policy_terms: 保险合同条款、保单号、合同编号、特别约定、责任免除、等待期、续保/退保条款",
-    "- insurance_coverage: 保险责任、保障范围、保额、免赔额、赔付比例、保险期间、承保区域",
-    "- insurance_premium: 保费、费率、折扣、缴费方式、缴费周期、应收/实收保费、佣金或手续费",
-    "- insurance_claims: 理赔条件、赔付金额、出险信息、赔案号、理赔进度、拒赔原因、赔付记录",
-    "- insurance_underwriting: 核保结论、风险评级、健康/职业/车辆风险因素、承保限制、加费或除外责任",
-    "- insurance_party_data: 投保人、被保险人、受益人、保单联系人、代理人/经纪人、企业客户等保险合同相关方信息",
+    "- contract_terms: contract terms, payment terms, breach liability, delivery terms",
+    "- pricing: price, quote, discount, cost, budget amount",
+    "- product_spec: internal product code, material number, unpublished specifications or parameters",
+    "- commercial_plan: bid plan, sales strategy, customer expansion plan, internal commercial decision",
+    "- customer_data: customer list, business contact, procurement intent",
+    "- insurance_policy_terms: policy terms, policy number, contract number, exclusions, waiting period, renewal or surrender terms",
+    "- insurance_coverage: insurance liability, coverage scope, sum insured, deductible, compensation ratio, policy period, underwriting region",
+    "- insurance_premium: premium, rate, discount, payment method, payment period, receivables, paid premium, commission or fees",
+    "- insurance_claims: claim conditions, claim amount, incident information, claim number, claim progress, denial reason, payout record",
+    "- insurance_underwriting: underwriting conclusion, risk rating, health/occupation/vehicle risk factors, coverage limits, surcharges or exclusions",
+    "- insurance_party_data: policyholder, insured, beneficiary, policy contact, agent/broker, enterprise customer data",
 )
 BusinessSensitiveCategoryName = Literal[
     "contract_terms",
@@ -52,6 +54,7 @@ BusinessSensitiveCategoryName = Literal[
     "insurance_party_data",
 ]
 BusinessSensitiveRiskLevel = Literal["low", "medium", "high"]
+BusinessSensitiveProvider = Literal["ollama", "qwen"]
 
 
 class BusinessSensitiveCategory(BaseModel):
@@ -69,10 +72,19 @@ class BusinessSensitiveResult(BaseModel):
 
 
 @dataclass(slots=True)
-class OllamaGenerateResponse:
+class ModelGenerateResponse:
     raw_text: str
     model: str
     thinking_text: str = ""
+
+
+@dataclass(slots=True)
+class BusinessSensitiveRuntimeConfig:
+    provider: BusinessSensitiveProvider
+    model: str
+    base_url: str
+    api_key: str = ""
+    display_name: str = ""
 
 
 class OllamaClient:
@@ -81,7 +93,7 @@ class OllamaClient:
         self.timeout_seconds = timeout_seconds
         self.model = model
 
-    def generate(self, prompt: str) -> OllamaGenerateResponse:
+    def generate(self, prompt: str) -> ModelGenerateResponse:
         json_schema = BusinessSensitiveResult.model_json_schema()
         no_think_prompt = (
             "/no_think\n"
@@ -123,10 +135,72 @@ class OllamaClient:
             logger.warning("BusinessSensitive Ollama envelope JSON decode failed. reason=%s", exc)
             raise
 
-        return OllamaGenerateResponse(
+        return ModelGenerateResponse(
             raw_text=str(data.get("response", "") or ""),
             model=str(data.get("model", self.model) or self.model),
             thinking_text=str(data.get("thinking", "") or ""),
+        )
+
+
+class OpenAICompatibleBusinessSensitiveClient:
+    def __init__(self, *, api_key: str, base_url: str, timeout_seconds: float, model: str, provider_label: str) -> None:
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.model = model
+        self.provider_label = provider_label
+
+    def generate(self, prompt: str) -> ModelGenerateResponse:
+        payload = json.dumps(
+            {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a business-sensitive information classifier. "
+                            "Return only one valid JSON object and no markdown."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+                "top_p": 0.1,
+                "max_tokens": 512,
+                "response_format": {"type": "json_object"},
+            }
+        ).encode("utf-8")
+        req = request.Request(
+            url=f"{self.base_url}/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout_seconds) as response:
+                body = response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            logger.warning("BusinessSensitive %s request rejected. detail=%s", self.provider_label, detail or exc.reason)
+            raise
+        except error.URLError as exc:
+            logger.warning("BusinessSensitive %s request failed. reason=%s", self.provider_label, exc)
+            raise
+
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            logger.warning("BusinessSensitive %s envelope JSON decode failed. reason=%s", self.provider_label, exc)
+            raise
+
+        choices = data.get("choices") or []
+        message = choices[0].get("message") if choices else {}
+        return ModelGenerateResponse(
+            raw_text=str((message or {}).get("content", "") or ""),
+            model=str(data.get("model", self.model) or self.model),
         )
 
 
@@ -136,23 +210,21 @@ class BusinessSensitiveScanner:
     def __init__(self) -> None:
         settings = get_settings()
         self.enabled = settings.business_sensitive_enabled
-        self.model = settings.business_sensitive_model or "qwen3.5:4b"
         self.timeout_seconds = settings.business_sensitive_timeout_seconds
-        self.provider = "ollama"
-        self.client = OllamaClient(
-            base_url=settings.business_sensitive_ollama_url,
-            timeout_seconds=self.timeout_seconds,
-            model=self.model,
-        )
+        self.provider = self._normalize_provider(settings.business_sensitive_provider)
+        self.model = self._default_model_for_provider(self.provider)
 
-    def scan(self, text: str) -> BusinessSensitiveResult:
+    def scan(self, text: str, db: Session | None = None) -> BusinessSensitiveResult:
         candidate = (text or "").strip()
         if not candidate or not self.enabled:
             return self.fallback_result()
 
         prompt = self._build_prompt(candidate)
         try:
-            response = self.client.generate(prompt)
+            runtime = self._resolve_runtime_config(db)
+            self.provider = runtime.provider
+            self.model = runtime.model
+            response = self._build_client(runtime).generate(prompt)
             parsed = self._parse_result(response)
             normalized = self._normalize_result(parsed)
             if normalized.contains_business_sensitive:
@@ -164,29 +236,129 @@ class BusinessSensitiveScanner:
                 f"{self.provider}/{self.model}",
                 exc,
             )
-            return self.fallback_result(summary="商务敏感扫描失败，已使用安全兜底结果。")
+            return self.fallback_result(summary="Business-sensitive scan failed; safe fallback result was used.")
+
+    def is_runtime_available(self, db: Session | None = None) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            runtime = self._resolve_runtime_config(db)
+        except Exception:
+            return False
+        return bool(runtime.provider == "ollama" or runtime.api_key)
+
+    def describe_runtime(self, db: Session | None = None) -> str:
+        try:
+            runtime = self._resolve_runtime_config(db)
+        except Exception as exc:
+            return f"Business-sensitive scanner runtime is not configured: {exc}"
+
+        if runtime.provider == "qwen":
+            configured = "configured" if runtime.api_key else "missing API key"
+            return (
+                f"Model: Aliyun Bailian {runtime.model}. "
+                f"Base URL: {runtime.base_url}. API key: {configured}. "
+                "Structured JSON is validated with safe fallback behavior."
+            )
+        return (
+            f"Model: local Ollama {runtime.model}. "
+            f"Base URL: {runtime.base_url}. "
+            "Structured JSON is validated with safe fallback behavior."
+        )
 
     def _build_prompt(self, text: str) -> str:
         categories = "\n".join(BUSINESS_CATEGORY_DESCRIPTIONS)
+        schema = BusinessSensitiveResult.model_json_schema()
         return (
-            "你是一个商务敏感信息分类器。\n"
-            "请阅读用户文本，并且只返回一个符合响应 schema 的 JSON 对象。\n"
-            "规则：\n"
-            "1. 只能输出合法 JSON，不能输出 markdown、解释说明或代码块。\n"
-            "2. categories[].name 必须且只能使用允许的英文枚举值。\n"
-            "3. summary、reason、matched_text 必须默认使用简体中文表述。\n"
-            "4. confidence 必须在 0 到 1 之间。\n"
-            "5. 如果没有商务敏感信息，返回 contains_business_sensitive=false、risk_level=low、空 categories、简短中文 summary、低 confidence。\n"
-            "6. 不要把个人简历、个人联系方式整理、个人身份/联系方式脱敏等非商业个人资料请求判定为商务敏感。\n"
-            "7. customer_data 必须具有明确商业语境，例如企业客户、销售线索、采购、报价、投标、合同、预算或内部商务运营。\n"
-            "8. 个人姓名、手机号、邮箱、身份证号、银行卡等在简历/Profile 场景中属于隐私敏感，但不属于商务敏感。\n"
-            "允许的类别：\n"
-            f"{categories}\n"
-            "用户文本：\n"
+            "You are a business-sensitive information classifier.\n"
+            "Read the user text and return exactly one JSON object matching this schema:\n"
+            f"{json.dumps(schema, ensure_ascii=False)}\n\n"
+            "Rules:\n"
+            "1. Output valid JSON only. Do not output markdown, explanations, or code fences.\n"
+            "2. categories[].name must use only the allowed enum values.\n"
+            "3. summary, reason, and matched_text should use Simplified Chinese by default.\n"
+            "4. confidence must be between 0 and 1.\n"
+            "5. If no business-sensitive content is present, return contains_business_sensitive=false, "
+            "risk_level=low, empty categories, a short Chinese summary, and low confidence.\n"
+            "6. Do not classify personal resumes, personal contact cleanup, or ordinary PII/profile requests "
+            "as business-sensitive unless they also contain clear commercial context.\n"
+            "7. customer_data requires explicit business context such as enterprise customers, sales leads, "
+            "procurement, quotation, bidding, contract, budget, or internal commercial operations.\n\n"
+            "Allowed categories:\n"
+            f"{categories}\n\n"
+            "User text:\n"
             f"{text}"
         )
 
-    def _parse_result(self, response: OllamaGenerateResponse) -> BusinessSensitiveResult:
+    def _resolve_runtime_config(self, db: Session | None = None) -> BusinessSensitiveRuntimeConfig:
+        settings = get_settings()
+        provider = self._normalize_provider(settings.business_sensitive_provider)
+        model = self._default_model_for_provider(provider)
+
+        if db is not None:
+            from ..system_setting_service import SystemSettingService
+
+            stored = SystemSettingService(db).get_business_sensitive_config()
+            provider = self._normalize_provider(stored["provider"])
+            model = stored["model"] or self._default_model_for_provider(provider)
+
+        if provider == "qwen":
+            api_key = settings.business_sensitive_qwen_api_key
+            base_url = settings.business_sensitive_qwen_base_url
+            display_name = "Aliyun Bailian"
+            if db is not None:
+                try:
+                    credential = ProviderCredentialService(db).require_credential("qwen")
+                    api_key = credential.api_key or api_key
+                    base_url = credential.base_url or base_url
+                    display_name = credential.display_name or display_name
+                except ProviderCredentialNotFoundError:
+                    pass
+            if not api_key:
+                raise ValueError("Aliyun Bailian API key is not configured.")
+            return BusinessSensitiveRuntimeConfig(
+                provider="qwen",
+                model=model or settings.business_sensitive_qwen_model or "deepseek-v4-flash",
+                base_url=base_url,
+                api_key=api_key,
+                display_name=display_name,
+            )
+
+        return BusinessSensitiveRuntimeConfig(
+            provider="ollama",
+            model=model or settings.business_sensitive_model or "qwen3.5:4b",
+            base_url=settings.business_sensitive_ollama_url,
+            display_name="Ollama",
+        )
+
+    def _build_client(self, runtime: BusinessSensitiveRuntimeConfig):
+        if runtime.provider == "qwen":
+            return OpenAICompatibleBusinessSensitiveClient(
+                api_key=runtime.api_key,
+                base_url=runtime.base_url,
+                timeout_seconds=self.timeout_seconds,
+                model=runtime.model,
+                provider_label=runtime.display_name or "Aliyun Bailian",
+            )
+        return OllamaClient(
+            base_url=runtime.base_url,
+            timeout_seconds=self.timeout_seconds,
+            model=runtime.model,
+        )
+
+    def _normalize_provider(self, provider: str) -> BusinessSensitiveProvider:
+        value = (provider or "").strip().lower()
+        if value == "qwen":
+            return "qwen"
+        return "ollama"
+
+    def _default_model_for_provider(self, provider: BusinessSensitiveProvider) -> str:
+        settings = get_settings()
+        if provider == "qwen":
+            return settings.business_sensitive_qwen_model or "deepseek-v4-flash"
+        return settings.business_sensitive_model or "qwen3.5:4b"
+
+    def _parse_result(self, response: ModelGenerateResponse) -> BusinessSensitiveResult:
         payload = self._extract_json_object(response.raw_text)
         if payload is None:
             logger.warning(
@@ -267,7 +439,7 @@ class BusinessSensitiveScanner:
         )
 
     @classmethod
-    def fallback_result(cls, *, summary: str = "商务敏感扫描当前不可用。") -> BusinessSensitiveResult:
+    def fallback_result(cls, *, summary: str = "Business-sensitive scanner is currently unavailable.") -> BusinessSensitiveResult:
         return BusinessSensitiveResult(
             contains_business_sensitive=False,
             risk_level="low",

@@ -20,13 +20,8 @@ env/
 .env.*
 !.env.example
 
-# Runtime databases and logs
-*.db
-*.sqlite
-*.sqlite3
-*.db-journal
+# Runtime logs
 *.log
-/data/postgres/
 
 # Local model/runtime caches
 .model-cache/

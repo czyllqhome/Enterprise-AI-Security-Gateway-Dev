@@ -6,6 +6,7 @@ from ..core.auth import require_admin
 from ..core.db import get_db
 from ..models.user import User
 from ..schemas.console import (
+    BusinessSensitiveScannerConfigUpdateRequest,
     ConsoleScannersResponse,
     ConsoleScannersUpdateRequest,
     ConsoleSummaryResponse,
@@ -44,6 +45,18 @@ def update_scanners(
 ) -> ConsoleScannersResponse:
     try:
         return ConsoleService(db).update_scanners(payload.enabled_scanners)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.put("/scanners/business-sensitive", response_model=ConsoleScannersResponse)
+def update_business_sensitive_scanner_config(
+    payload: BusinessSensitiveScannerConfigUpdateRequest,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> ConsoleScannersResponse:
+    try:
+        return ConsoleService(db).update_business_sensitive_config(provider=payload.provider, model=payload.model)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

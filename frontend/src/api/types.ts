@@ -124,6 +124,27 @@ export type Scanner = {
   detail: string;
 };
 
+export type BusinessSensitiveScannerOption = {
+  provider: "ollama" | "qwen";
+  model: string;
+  label: string;
+  description: string;
+};
+
+export type BusinessSensitiveScannerConfig = {
+  provider: "ollama" | "qwen";
+  model: string;
+  options: BusinessSensitiveScannerOption[];
+  configured: boolean;
+  detail: string;
+};
+
+export type ConsoleScannersResponse = {
+  scanners: Scanner[];
+  enabled_scanners: string[];
+  business_sensitive_config?: BusinessSensitiveScannerConfig | null;
+};
+
 export type LogEntry = {
   id: number;
   session_id: number | null;

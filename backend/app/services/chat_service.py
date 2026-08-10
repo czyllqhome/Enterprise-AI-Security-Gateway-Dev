@@ -48,7 +48,7 @@ class ChatService:
     def preview_message(self, payload: ChatPreviewRequest, username: str) -> ChatPreviewResponse:
         session = self.session_service.get_session(payload.session_id, username=username)
         enabled_scanners = self.setting_service.get_enabled_scanners()
-        scan = self.guardrail_service.scan_text(payload.message, enabled_scanners=enabled_scanners)
+        scan = self.guardrail_service.scan_text(payload.message, enabled_scanners=enabled_scanners, db=self.db)
         status = (
             "blocked"
             if self._should_block_scan(scan)
@@ -118,7 +118,7 @@ class ChatService:
             if payload.enabled_scanners is not None
             else self.setting_service.get_enabled_scanners()
         )
-        scan = self.guardrail_service.scan_text(payload.original_message, enabled_scanners=enabled_scanners)
+        scan = self.guardrail_service.scan_text(payload.original_message, enabled_scanners=enabled_scanners, db=self.db)
         event = self.scan_event_service.get_event(payload.scan_event_id) if payload.scan_event_id else None
 
         if self._should_block_scan(scan):

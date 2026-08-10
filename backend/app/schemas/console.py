@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -31,13 +32,34 @@ class ScannerStatus(BaseModel):
     detail: str
 
 
+class BusinessSensitiveScannerOption(BaseModel):
+    provider: Literal["ollama", "qwen"]
+    model: str
+    label: str
+    description: str
+
+
+class BusinessSensitiveScannerConfig(BaseModel):
+    provider: Literal["ollama", "qwen"]
+    model: str
+    options: list[BusinessSensitiveScannerOption]
+    configured: bool
+    detail: str
+
+
 class ConsoleScannersResponse(BaseModel):
     scanners: list[ScannerStatus]
     enabled_scanners: list[str]
+    business_sensitive_config: BusinessSensitiveScannerConfig | None = None
 
 
 class ConsoleScannersUpdateRequest(BaseModel):
     enabled_scanners: list[str]
+
+
+class BusinessSensitiveScannerConfigUpdateRequest(BaseModel):
+    provider: Literal["ollama", "qwen"]
+    model: str | None = None
 
 
 class LastScanResponse(BaseModel):

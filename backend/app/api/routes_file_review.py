@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from urllib.parse import unquote
 
-from ..core.auth import get_current_user
+from ..core.auth import get_current_user, require_admin
 from ..core.db import get_db
 from ..models.user import User
 from ..schemas.file_review import (
@@ -24,13 +24,17 @@ router = APIRouter(prefix="/api/file-review", tags=["file-review"])
 
 
 @router.get("/settings", response_model=FileStorageSettingsResponse)
-def get_file_review_settings(db: Session = Depends(get_db)) -> FileStorageSettingsResponse:
+def get_file_review_settings(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> FileStorageSettingsResponse:
     return FileReviewService(db).get_storage_settings()
 
 
 @router.put("/settings", response_model=FileStorageSettingsResponse)
 def update_file_review_settings(
     payload: FileStorageSettingsUpdateRequest,
+    _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> FileStorageSettingsResponse:
     try:
@@ -40,14 +44,21 @@ def update_file_review_settings(
 
 
 @router.get("/files", response_model=UploadedFileListResponse)
-def list_uploaded_files(db: Session = Depends(get_db)) -> UploadedFileListResponse:
-    return FileReviewService(db).list_files()
+def list_uploaded_files(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UploadedFileListResponse:
+    return FileReviewService(db).list_files(current_user=current_user)
 
 
 @router.get("/files/{file_id}", response_model=UploadedFileResponse)
-def get_uploaded_file(file_id: int, db: Session = Depends(get_db)) -> UploadedFileResponse:
+def get_uploaded_file(
+    file_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UploadedFileResponse:
     try:
-        return FileReviewService(db).get_file(file_id)
+        return FileReviewService(db).get_file(file_id, current_user=current_user)
     except UploadedFileNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

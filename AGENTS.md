@@ -50,9 +50,8 @@
 
 ### 数据库与运行环境
 
-- 默认配置可使用 SQLite，默认数据库路径由后端解析为 `backend/ai_guard_demo.db`
-- `backend/.env.example` 中示例 `DATABASE_URL` 使用 PostgreSQL
-- 根目录提供 `docker-compose.postgres.yml`，用于启动本地 PostgreSQL 16 容器
+- 默认配置使用 PostgreSQL，默认连接为本机 PostgreSQL 18：`127.0.0.1:5432`
+- `backend/.env.example` 中示例 `DATABASE_URL` 使用 `postgresql+psycopg`
 - 本地模型缓存默认位于 `backend/.model-cache/`
 
 ## 目录结构说明
@@ -61,8 +60,6 @@
 .
 ├── AGENTS.md                         # 本文件，供后续 AI Agent / 开发者快速理解项目
 ├── README.md                         # 根 README，说明前后端拆分、启动地址和路由模型
-├── docker-compose.postgres.yml       # PostgreSQL 16 本地开发容器配置
-├── data/                             # PostgreSQL 数据卷目录，来自 docker-compose 配置
 ├── design md/                        # 产品/设计说明文档
 ├── frontend/                         # React + Vite 前端应用
 │   ├── package.json                  # 前端依赖与 npm scripts
@@ -292,11 +289,9 @@ README 提到的以下文件当前未在项目文件列表中发现：
 - `backend/app/core/config.py`
   - 后端 Settings 定义；实际读取 `backend/.env`。
 - `backend/alembic.ini`
-  - Alembic 配置，默认 `sqlalchemy.url = sqlite:///./ai_guard_demo.db`。
+  - Alembic 配置，默认 `sqlalchemy.url` 指向本机 PostgreSQL。
 - `backend/alembic/versions/20260614_0001_initial_product_schema.py`
   - 初始产品表结构迁移，包含用户、会话、消息、日志、扫描事件、上传文件、系统设置、提供商凭据等表。
-- `docker-compose.postgres.yml`
-  - 本地 PostgreSQL 16 配置，数据库名 `ai_guard`，用户 `ai_guard_user`，端口 `5432`，数据卷 `./data/postgres`。
 - `frontend/package.json`
   - 前端依赖和 `dev`、`build`、`preview` 脚本。
 - `frontend/.env.example`
@@ -312,7 +307,7 @@ README 提到的以下文件当前未在项目文件列表中发现：
 - 后端配置文件解析位置是 `backend/.env`，不是根目录 `.env`。
 - 如果需要默认管理员，必须设置 `DEFAULT_ADMIN_PASSWORD`；否则启动时不会自动创建管理员。
 - 开发环境默认 CORS 只允许 `http://127.0.0.1:5173`，如前端端口变化需要同步更新 `CORS_ORIGINS`。
-- 默认 SQLite 数据库会落在 `backend/ai_guard_demo.db`；如果使用 PostgreSQL，需要设置 `DATABASE_URL` 并可配合根目录的 `docker-compose.postgres.yml`。
+- 项目不再使用本地文件数据库；部署前需要创建 PostgreSQL 数据库 `ai_guard` 和用户 `ai_guard_user`，并在 `backend/.env` 中设置 `DATABASE_URL`。
 - 模型与扫描器可能依赖本地缓存、Hugging Face 模型、Ollama 服务和 PaddleOCR 相关模型；首次运行可能需要下载或准备模型文件。
 - 商务敏感扫描和文件审核默认依赖本地 Ollama 地址 `http://127.0.0.1:11434` 和模型 `qwen3.5:4b`。
 - Privacy Filter 默认 `PRIVACY_FILTER_AUTO_DOWNLOAD=false`，若本地 `backend/.model-cache/openai-privacy-filter` 不存在，相关扫描器可能不可用或降级。
