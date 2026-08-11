@@ -295,3 +295,11 @@ uv run pytest
 - 默认 CORS 仅允许 `http://127.0.0.1:5173`，更换前端地址时需要同步更新 `CORS_ORIGINS`。
 - `Base.metadata.create_all` 和 Alembic 迁移同时存在；生产化前应明确数据库迁移策略，避免仅依赖自动建表。
 - 文件审核、Privacy Filter、Qwen3Guard、PaddleOCR 和 Ollama 相关能力可能在首次运行时下载或加载较大的模型文件。
+
+## Latest Feature Notes
+
+- The chat composer supports Office, PDF, and image attachments. After upload, the frontend shows a compact attachment preview below the prompt with upload status, extracted summary, risk status, and a short extracted-text preview.
+- Attachment chat requests pass `attachment_file_id` through `POST /api/chat/preview` and `POST /api/chat/confirm`. The backend loads the reviewed attachment from `uploaded_files`, appends extracted text to the model prompt, and blocks incomplete, unreadable, or high-risk attachments.
+- Admins can configure attachment storage in the React admin console at `/admin/configuration`. The Configuration page stores Windows and Linux storage paths, an active storage profile, and whether uploads should be organized into username subdirectories.
+- Relevant file-review environment variables are `FILE_REVIEW_ACTIVE_STORAGE_PROFILE`, `FILE_REVIEW_WINDOWS_STORAGE_PATH`, `FILE_REVIEW_LINUX_STORAGE_PATH`, and `FILE_REVIEW_PER_USER_STORAGE_DIRS`.
+- Local sample attachments should remain outside git; `attachments_testfiles/` is ignored.

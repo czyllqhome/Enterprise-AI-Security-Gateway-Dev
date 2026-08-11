@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -28,6 +29,13 @@ class Settings(BaseSettings):
         default="https://api.openai.com/v1",
         alias="OPENAI_BASE_URL",
     )
+    bedrock_region: str = Field(default="us-east-1", alias="BEDROCK_REGION")
+    bedrock_default_model: str = Field(
+        default="anthropic.claude-3-5-haiku-20241022-v1:0",
+        alias="BEDROCK_DEFAULT_MODEL",
+    )
+    bedrock_profile_name: str = Field(default="", alias="BEDROCK_PROFILE_NAME")
+    bedrock_timeout_seconds: float = Field(default=60.0, alias="BEDROCK_TIMEOUT_SECONDS")
     database_url: str = Field(
         default=DEFAULT_DATABASE_URL,
         alias="DATABASE_URL",
@@ -59,18 +67,43 @@ class Settings(BaseSettings):
         alias="BUSINESS_SENSITIVE_QWEN_BASE_URL",
     )
     business_sensitive_qwen_api_key: str = Field(default="", alias="BUSINESS_SENSITIVE_QWEN_API_KEY")
+    business_sensitive_bedrock_model: str = Field(
+        default="anthropic.claude-3-5-haiku-20241022-v1:0",
+        alias="BUSINESS_SENSITIVE_BEDROCK_MODEL",
+    )
     business_sensitive_timeout_seconds: float = Field(
         default=20.0,
         alias="BUSINESS_SENSITIVE_TIMEOUT_SECONDS",
     )
     file_review_enabled: bool = Field(default=True, alias="FILE_REVIEW_ENABLED")
+    file_review_provider: str = Field(default="ollama", alias="FILE_REVIEW_PROVIDER")
     file_review_model: str = Field(default="qwen3.5:4b", alias="FILE_REVIEW_MODEL")
+    file_review_bedrock_model: str = Field(
+        default="anthropic.claude-3-5-haiku-20241022-v1:0",
+        alias="FILE_REVIEW_BEDROCK_MODEL",
+    )
     file_review_ollama_url: str = Field(default="http://127.0.0.1:11434", alias="FILE_REVIEW_OLLAMA_URL")
     file_review_timeout_seconds: float = Field(default=45.0, alias="FILE_REVIEW_TIMEOUT_SECONDS")
     file_review_max_upload_mb: int = Field(default=20, alias="FILE_REVIEW_MAX_UPLOAD_MB")
     file_review_default_storage_path: str = Field(
         default=str(BASE_DIR / "uploaded-documents"),
         alias="FILE_REVIEW_DEFAULT_STORAGE_PATH",
+    )
+    file_review_active_storage_profile: str = Field(
+        default_factory=lambda: "windows" if os.name == "nt" else "linux",
+        alias="FILE_REVIEW_ACTIVE_STORAGE_PROFILE",
+    )
+    file_review_windows_storage_path: str = Field(
+        default="",
+        alias="FILE_REVIEW_WINDOWS_STORAGE_PATH",
+    )
+    file_review_linux_storage_path: str = Field(
+        default="/var/lib/ai-security-gateway/uploaded-documents",
+        alias="FILE_REVIEW_LINUX_STORAGE_PATH",
+    )
+    file_review_per_user_storage_dirs: bool = Field(
+        default=True,
+        alias="FILE_REVIEW_PER_USER_STORAGE_DIRS",
     )
     file_ocr_det_model_dir: str = Field(
         default=str(BASE_DIR / ".model-cache" / "ch_PP-OCRv4_det_infer"),

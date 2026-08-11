@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from ..schemas.file_review import (
     ExtractedSegment,
     FileReviewResult,
     FileStorageSettingsResponse,
+    FileStorageSettingsUpdateRequest,
     UploadedFileListResponse,
     UploadedFileResponse,
 )
@@ -51,15 +53,46 @@ class FileReviewService:
         self.review_scanner = FileReviewScanner()
 
     def get_storage_settings(self) -> FileStorageSettingsResponse:
+        active_profile = self.setting_service.get_file_review_active_storage_profile()
+        windows_path = self.setting_service.get_file_review_storage_path_for_profile("windows")
+        linux_path = self.setting_service.get_file_review_storage_path_for_profile("linux")
         return FileStorageSettingsResponse(
-            default_storage_path=self.setting_service.get_file_review_storage_path(),
+            default_storage_path=self.setting_service.get_file_review_storage_path_for_profile(active_profile),
+            active_storage_profile=active_profile,
+            windows_storage_path=windows_path,
+            linux_storage_path=linux_path,
+            per_user_subdirectories=self.setting_service.get_file_review_per_user_subdirectories(),
             max_upload_mb=self.settings.file_review_max_upload_mb,
         )
 
-    def update_storage_settings(self, default_storage_path: str) -> FileStorageSettingsResponse:
-        path = Path(default_storage_path).expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        self.setting_service.set_file_review_storage_path(str(path))
+    def update_storage_settings(self, payload: FileStorageSettingsUpdateRequest) -> FileStorageSettingsResponse:
+        current = self.get_storage_settings()
+        active_profile = payload.active_storage_profile or current.active_storage_profile
+        windows_path = payload.windows_storage_path or current.windows_storage_path
+        linux_path = payload.linux_storage_path or current.linux_storage_path
+        per_user_subdirectories = (
+            payload.per_user_subdirectories
+            if payload.per_user_subdirectories is not None
+            else current.per_user_subdirectories
+        )
+
+        if payload.default_storage_path:
+            if active_profile == "windows":
+                windows_path = payload.default_storage_path
+            else:
+                linux_path = payload.default_storage_path
+
+        resolved_windows_path = self._normalize_storage_path("windows", windows_path)
+        resolved_linux_path = self._normalize_storage_path("linux", linux_path)
+        active_path = resolved_windows_path if active_profile == "windows" else resolved_linux_path
+        if self._profile_matches_runtime(active_profile):
+            Path(active_path).mkdir(parents=True, exist_ok=True)
+        self.setting_service.set_file_review_storage_settings(
+            active_storage_profile=active_profile,
+            windows_storage_path=resolved_windows_path,
+            linux_storage_path=resolved_linux_path,
+            per_user_subdirectories=per_user_subdirectories,
+        )
         return self.get_storage_settings()
 
     def list_files(self, *, current_user: User) -> UploadedFileListResponse:
@@ -90,7 +123,12 @@ class FileReviewService:
 
         storage_root = self.setting_service.get_file_review_storage_path()
         storage = FileStorageService(storage_root)
-        target_path = storage.build_target_path(original_filename)
+        upload_username = (username or "").strip() or "Guest"
+        target_path = storage.build_target_path(
+            original_filename,
+            username=upload_username,
+            use_user_directory=self.setting_service.get_file_review_per_user_subdirectories(),
+        )
         target_path.write_bytes(content)
 
         record = UploadedFile(
@@ -101,7 +139,7 @@ class FileReviewService:
             extension=extension,
             size_bytes=len(content),
             storage_path=str(target_path),
-            uploaded_by=(username or "").strip() or "Guest",
+            uploaded_by=upload_username,
             status="processing",
         )
         self.db.add(record)
@@ -178,6 +216,15 @@ class FileReviewService:
         if extension == ".pptx":
             return "powerpoint"
         return "file"
+
+    def _normalize_storage_path(self, profile: str, path: str) -> str:
+        cleaned = path.strip()
+        if self._profile_matches_runtime(profile):
+            return str(Path(cleaned).expanduser().resolve())
+        return cleaned
+
+    def _profile_matches_runtime(self, profile: str) -> bool:
+        return (profile == "windows" and os.name == "nt") or (profile == "linux" and os.name != "nt")
 
     def _can_access_file(self, record: UploadedFile, current_user: User) -> bool:
         return self._is_admin(current_user) or record.uploaded_by == current_user.username

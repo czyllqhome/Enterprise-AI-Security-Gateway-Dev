@@ -39,6 +39,19 @@ function sourceLabel(entity: GuardrailEntity) {
   return sources.map((source) => scannerLabels[source] || source).join(", ") || "Scanner";
 }
 
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function isHighRiskAttachment(file: UploadedFile | null) {
+  return file?.review_result?.contains_business_sensitive && file.review_result.risk_level === "high";
+}
+
 const demoSamples: DemoSample[] = [
   {
     name: "Normal Question",
@@ -198,7 +211,8 @@ export function ChatPage() {
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!selected || !message.trim()) {
+    const prompt = message.trim() || (attachment ? "请总结这个文件。" : "");
+    if (!selected || !prompt.trim() || !isAttachmentReadyToSend()) {
       return;
     }
     setLoading(true);
@@ -207,7 +221,11 @@ export function ChatPage() {
     try {
       const result = await apiFetch<ChatPreview>("/api/chat/preview", {
         method: "POST",
-        body: JSON.stringify({ session_id: selected.id, message: message.trim() }),
+        body: JSON.stringify({
+          session_id: selected.id,
+          message: prompt.trim(),
+          attachment_file_id: attachment?.id ?? null,
+        }),
       });
       if (result.status === "blocked") {
         setStatus(result.blocked_reason || "请求已被安全策略拦截。");
@@ -241,9 +259,11 @@ export function ChatPage() {
           sanitized_message: targetPreview.sanitized_message,
           scan_event_id: targetPreview.scan_event_id,
           enabled_scanners: targetPreview.enabled_scanners,
+          attachment_file_id: targetPreview.attachment_file_id,
         }),
       });
       setMessage("");
+      clearAttachment();
       setPreview(null);
       setStatus("已发送。");
       await loadSessions(selected.id);
@@ -340,6 +360,26 @@ export function ChatPage() {
     }
     return "安全审核完成";
   }
+
+  function isAttachmentReadyToSend() {
+    if (!attachmentName) {
+      return true;
+    }
+    return attachment?.status === "completed" && !isHighRiskAttachment(attachment);
+  }
+
+  function attachmentPreviewText() {
+    if (!attachment?.extracted_segments?.length) {
+      return (attachment?.extracted_text || "").trim().slice(0, 900);
+    }
+    return attachment.extracted_segments
+      .slice(0, 3)
+      .map((segment) => `${segment.location}: ${segment.text}`.trim())
+      .join("\n\n")
+      .slice(0, 900);
+  }
+
+  const canSubmit = Boolean(selected && !loading && isAttachmentReadyToSend() && (message.trim() || attachment?.status === "completed"));
 
   return (
     <main className="app-shell">
@@ -485,25 +525,39 @@ export function ChatPage() {
 
         <form className="composer" onSubmit={handleSubmit}>
           <div className="composer-input">
-            {attachmentName ? (
-              <div className={`attachment-chip ${attachment?.status === "failed" ? "failed" : ""}`}>
-                {uploadingAttachment || attachment?.status === "processing" ? (
-                  <LoaderCircle className="spin" size={18} />
-                ) : attachment?.status === "completed" ? (
-                  <CheckCircle2 size={18} />
-                ) : (
-                  <FileText size={18} />
-                )}
-                <span>
-                  <strong>{attachmentName}</strong>
-                  <small>{attachmentStatusText()}</small>
-                </span>
-                <button type="button" className="attachment-remove" onClick={clearAttachment} title="移除附件">
-                  <X size={16} />
-                </button>
-              </div>
-            ) : null}
             <textarea ref={messageInputRef} value={message} onChange={handleMessageChange} placeholder="输入消息，系统会先进行安全扫描..." />
+            {attachmentName ? (
+              <section className={`attachment-preview ${attachment?.status === "failed" ? "failed" : ""} ${isHighRiskAttachment(attachment) ? "blocked" : ""}`}>
+                <div className="attachment-preview-head">
+                  {uploadingAttachment || attachment?.status === "processing" ? (
+                    <LoaderCircle className="spin" size={18} />
+                  ) : attachment?.status === "completed" ? (
+                    <CheckCircle2 size={18} />
+                  ) : (
+                    <FileText size={18} />
+                  )}
+                  <div>
+                    <strong>{attachmentName}</strong>
+                    <small>{attachmentStatusText()} - {formatBytes(attachment?.size_bytes || 0)}</small>
+                  </div>
+                  <button type="button" className="attachment-remove" onClick={clearAttachment} title="Remove attachment">
+                    <X size={16} />
+                  </button>
+                </div>
+                {attachment?.status === "completed" ? (
+                  <div className="attachment-preview-body">
+                    <div className="attachment-preview-meta">
+                      <span>{attachment.file_type}</span>
+                      <span>{attachment.uploaded_by}</span>
+                      <span>{attachment.review_result?.risk_level || "low"} risk</span>
+                    </div>
+                    {attachment.extraction_summary ? <p>{attachment.extraction_summary}</p> : null}
+                    {attachment.review_result?.summary ? <p>{attachment.review_result.summary}</p> : null}
+                    {attachmentPreviewText() ? <pre>{attachmentPreviewText()}</pre> : null}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             <div className="composer-actions">
               <input
                 ref={attachmentInputRef}
@@ -525,7 +579,7 @@ export function ChatPage() {
               <span>支持 Office、PDF 和图片，上传后自动进行安全审核</span>
             </div>
           </div>
-          <button className="primary-btn" disabled={!selected || loading || !message.trim()}>
+          <button className="primary-btn" disabled={!canSubmit}>
             <Send size={18} />
             发送
           </button>

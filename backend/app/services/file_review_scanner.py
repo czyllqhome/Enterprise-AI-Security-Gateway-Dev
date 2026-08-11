@@ -12,6 +12,7 @@ from ..schemas.file_review import FileReviewHit, FileReviewResult
 from ..schemas.file_review_runtime import ExtractedDocument
 from .guardrails.business_sensitive_scanner import (
     BUSINESS_SENSITIVE_CATEGORIES,
+    BedrockBusinessSensitiveClient,
     BusinessSensitiveCategory,
     OllamaClient,
 )
@@ -44,13 +45,25 @@ class FileReviewScanner:
     def __init__(self) -> None:
         settings = get_settings()
         self.enabled = settings.file_review_enabled
-        self.model = settings.file_review_model
-        self.timeout_seconds = settings.file_review_timeout_seconds
-        self.client = OllamaClient(
-            base_url=settings.file_review_ollama_url,
-            timeout_seconds=self.timeout_seconds,
-            model=self.model,
+        self.provider = (settings.file_review_provider or "ollama").strip().lower()
+        self.model = (
+            settings.file_review_bedrock_model
+            if self.provider == "bedrock"
+            else settings.file_review_model
         )
+        self.timeout_seconds = settings.file_review_timeout_seconds
+        if self.provider == "bedrock":
+            self.client = BedrockBusinessSensitiveClient(
+                region_name=settings.bedrock_region,
+                timeout_seconds=self.timeout_seconds,
+                model=self.model,
+            )
+        else:
+            self.client = OllamaClient(
+                base_url=settings.file_review_ollama_url,
+                timeout_seconds=self.timeout_seconds,
+                model=self.model,
+            )
 
     def review(self, document: ExtractedDocument) -> FileReviewResult:
         if not self.enabled:

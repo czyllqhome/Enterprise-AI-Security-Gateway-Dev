@@ -46,6 +46,17 @@ def get_provider_catalog() -> dict[str, ProviderDefinition]:
                 "anthropic/claude-fable-5",
             ),
         ),
+        "bedrock": ProviderDefinition(
+            provider="bedrock",
+            display_name="AWS Bedrock",
+            default_base_url=f"bedrock-runtime.{settings.bedrock_region}.amazonaws.com",
+            default_models=(
+                settings.bedrock_default_model,
+                "amazon.nova-lite-v1:0",
+                "anthropic.claude-3-5-haiku-20241022-v1:0",
+            ),
+            requires_api_key=False,
+        ),
         "ollama": ProviderDefinition(
             provider="ollama",
             display_name="Ollama",

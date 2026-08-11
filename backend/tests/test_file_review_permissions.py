@@ -11,6 +11,9 @@ from app.core.security import create_access_token, hash_password
 from app.main import app
 from app.models.uploaded_file import UploadedFile
 from app.models.user import User
+from app.schemas.file_review import FileStorageSettingsUpdateRequest
+from app.services.chat_service import ChatService, GuardrailViolationError
+from app.services.file_review_service import FileReviewService, UploadedFilePayload
 
 
 @pytest.fixture()
@@ -77,6 +80,27 @@ def create_uploaded_file(db_session, *, uploaded_by: str, filename: str) -> Uplo
     return record
 
 
+def create_completed_uploaded_file(
+    db_session,
+    *,
+    uploaded_by: str,
+    filename: str,
+    text: str,
+    review_result: dict | None = None,
+) -> UploadedFile:
+    record = create_uploaded_file(db_session, uploaded_by=uploaded_by, filename=filename)
+    record.extracted_text = text
+    record.extracted_segments_json = [{"location": "Image", "text": text, "source_kind": "image_ocr"}]
+    record.review_result_json = review_result or {
+        "contains_business_sensitive": False,
+        "risk_level": "low",
+        "summary": "Attachment is allowed.",
+    }
+    db_session.commit()
+    db_session.refresh(record)
+    return record
+
+
 def auth_headers(username: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(username)}"}
 
@@ -114,7 +138,77 @@ def test_file_review_settings_require_admin(client, db_session, tmp_path: Path):
         json={"default_storage_path": str(admin_storage_path)},
     )
     assert response.status_code == 200
-    assert response.json()["default_storage_path"] == str(admin_storage_path.resolve())
+    payload = response.json()
+    active_path_key = f"{payload['active_storage_profile']}_storage_path"
+    assert payload["default_storage_path"] == str(admin_storage_path.resolve())
+    assert payload[active_path_key] == str(admin_storage_path.resolve())
+    assert payload["per_user_subdirectories"] is True
+
+
+def test_uploaded_file_is_stored_under_username_directory(client, db_session, tmp_path: Path):
+    create_user(db_session, "alice")
+    service = FileReviewService(db_session)
+    service.update_storage_settings(
+        FileStorageSettingsUpdateRequest(default_storage_path=str(tmp_path))
+    )
+
+    created = service.create_uploaded_file(
+        UploadedFilePayload(
+            filename="Quarter Plan.pdf",
+            content=b"%PDF-1.4 demo",
+            content_type="application/pdf",
+        ),
+        username="alice",
+    )
+
+    stored_path = Path(created.storage_path)
+    assert stored_path.parent == tmp_path.resolve() / "alice"
+    assert stored_path.exists()
+
+
+def test_chat_attachment_context_uses_extracted_file_text(db_session):
+    create_user(db_session, "alice")
+    record = create_completed_uploaded_file(
+        db_session,
+        uploaded_by="alice",
+        filename="purchase-order.png",
+        text="Purchase order total is 880000 CNY for semiconductor equipment.",
+    )
+    service = ChatService.__new__(ChatService)
+    service.db = db_session
+
+    message = service._build_message_with_attachment_context(
+        "总结这个文件",
+        attachment_file_id=record.id,
+        username="alice",
+    )
+
+    assert "[Attachment: purchase-order.png]" in message
+    assert "Purchase order total is 880000 CNY" in message
+
+
+def test_chat_attachment_context_blocks_high_risk_file(db_session):
+    create_user(db_session, "alice")
+    record = create_completed_uploaded_file(
+        db_session,
+        uploaded_by="alice",
+        filename="high-risk.png",
+        text="confidential pricing",
+        review_result={
+            "contains_business_sensitive": True,
+            "risk_level": "high",
+            "summary": "High risk business data.",
+        },
+    )
+    service = ChatService.__new__(ChatService)
+    service.db = db_session
+
+    with pytest.raises(GuardrailViolationError):
+        service._build_message_with_attachment_context(
+            "总结这个文件",
+            attachment_file_id=record.id,
+            username="alice",
+        )
 
 
 def test_file_list_requires_auth_and_scopes_regular_users(client, db_session):

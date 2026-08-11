@@ -1,7 +1,9 @@
 from sqlalchemy.orm import Session
 
 from ...core.provider_catalog import get_provider_catalog
+from ...core.config import get_settings
 from ..provider_credential_service import ProviderCredentialNotFoundError, ProviderCredentialService
+from .bedrock_client import BedrockClient
 from .ollama_client import OllamaClient
 from .openai_client import OpenAIClient
 
@@ -23,6 +25,12 @@ def get_llm_client(provider: str, db: Session | None = None):
             base_url=credential.base_url,
             provider_label=credential.display_name,
             default_headers=default_headers,
+        )
+    if normalized == "bedrock":
+        definition = get_provider_catalog()["bedrock"]
+        return BedrockClient(
+            region_name=get_settings().bedrock_region,
+            provider_label=definition.display_name,
         )
     if normalized == "ollama":
         if db is None:

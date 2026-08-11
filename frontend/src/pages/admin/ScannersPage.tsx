@@ -4,12 +4,13 @@ import type { BusinessSensitiveScannerConfig, ConsoleScannersResponse, Scanner }
 import { PageTitle } from "./DashboardPage";
 
 const toggleableScanners = new Set(["bancode", "prompt_injection", "ban_topics", "privacy_filter", "business_sensitive", "custom_regex"]);
+type BusinessSensitiveProvider = "ollama" | "qwen" | "bedrock";
 
 export function ScannersPage() {
   const [scanners, setScanners] = useState<Scanner[]>([]);
   const [enabled, setEnabled] = useState<string[]>([]);
   const [businessConfig, setBusinessConfig] = useState<BusinessSensitiveScannerConfig | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState<"ollama" | "qwen">("ollama");
+  const [selectedProvider, setSelectedProvider] = useState<BusinessSensitiveProvider>("ollama");
   const [selectedModel, setSelectedModel] = useState("");
   const [status, setStatus] = useState("");
 
@@ -55,7 +56,7 @@ export function ScannersPage() {
     setStatus("Business Sensitive runtime updated.");
   }
 
-  function setBusinessProvider(provider: "ollama" | "qwen") {
+  function setBusinessProvider(provider: BusinessSensitiveProvider) {
     setSelectedProvider(provider);
     const option = businessConfig?.options.find((item) => item.provider === provider);
     if (option) {
@@ -78,7 +79,7 @@ export function ScannersPage() {
           <div className="scanner-runtime-controls">
             <label>
               Provider
-              <select value={selectedProvider} onChange={(event) => setBusinessProvider(event.target.value as "ollama" | "qwen")}>
+              <select value={selectedProvider} onChange={(event) => setBusinessProvider(event.target.value as BusinessSensitiveProvider)}>
                 {businessOptions.map((option) => (
                   <option key={option.provider} value={option.provider}>{option.label}</option>
                 ))}

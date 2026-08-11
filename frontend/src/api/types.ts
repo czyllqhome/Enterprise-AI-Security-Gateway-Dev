@@ -68,6 +68,7 @@ export type BusinessSensitiveResult = {
 export type ChatPreview = {
   scan_event_id: number | null;
   session_id: number;
+  attachment_file_id: number | null;
   status: "clean" | "needs_confirmation" | "blocked" | string;
   blocked_reason: string | null;
   original_message: string;
@@ -85,13 +86,17 @@ export type ChatPreview = {
 export type UploadedFile = {
   id: number;
   original_filename: string;
+  stored_filename: string;
   file_type: string;
   content_type: string;
   extension: string;
   size_bytes: number;
+  storage_path: string;
   uploaded_by: string;
   status: "processing" | "completed" | "failed" | string;
   extraction_summary: string | null;
+  extracted_text: string | null;
+  extracted_segments: ExtractedSegment[];
   review_result: {
     contains_business_sensitive: boolean;
     risk_level: "low" | "medium" | "high" | string;
@@ -100,6 +105,24 @@ export type UploadedFile = {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ExtractedSegment = {
+  location: string;
+  text: string;
+  page_number: number | null;
+  sheet_name: string | null;
+  slide_number: number | null;
+  source_kind: string;
+};
+
+export type FileStorageSettings = {
+  default_storage_path: string;
+  active_storage_profile: "windows" | "linux";
+  windows_storage_path: string;
+  linux_storage_path: string;
+  per_user_subdirectories: boolean;
+  max_upload_mb: number;
 };
 
 export type Dashboard = {
@@ -125,14 +148,14 @@ export type Scanner = {
 };
 
 export type BusinessSensitiveScannerOption = {
-  provider: "ollama" | "qwen";
+  provider: "ollama" | "qwen" | "bedrock";
   model: string;
   label: string;
   description: string;
 };
 
 export type BusinessSensitiveScannerConfig = {
-  provider: "ollama" | "qwen";
+  provider: "ollama" | "qwen" | "bedrock";
   model: string;
   options: BusinessSensitiveScannerOption[];
   configured: boolean;

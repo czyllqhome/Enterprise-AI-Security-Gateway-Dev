@@ -154,6 +154,11 @@ DEFAULT_MODEL=gpt-4.1-mini
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 
+BEDROCK_REGION=us-east-1
+BEDROCK_DEFAULT_MODEL=anthropic.claude-3-5-haiku-20241022-v1:0
+BEDROCK_PROFILE_NAME=
+BEDROCK_TIMEOUT_SECONDS=60
+
 LOCAL_MODEL_CACHE_DIR=./.model-cache
 
 PRIVACY_FILTER_ENABLED=true
@@ -171,6 +176,7 @@ BUSINESS_SENSITIVE_OLLAMA_URL=http://127.0.0.1:11434
 BUSINESS_SENSITIVE_QWEN_MODEL=deepseek-v4-flash
 BUSINESS_SENSITIVE_QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 BUSINESS_SENSITIVE_QWEN_API_KEY=
+BUSINESS_SENSITIVE_BEDROCK_MODEL=anthropic.claude-3-5-haiku-20241022-v1:0
 BUSINESS_SENSITIVE_TIMEOUT_SECONDS=20
 
 QWEN3GUARD_ENABLED=true
@@ -179,7 +185,9 @@ QWEN3GUARD_MODEL_PATH=
 QWEN3GUARD_MAX_NEW_TOKENS=96
 
 FILE_REVIEW_ENABLED=true
+FILE_REVIEW_PROVIDER=ollama
 FILE_REVIEW_MODEL=qwen3.5:4b
+FILE_REVIEW_BEDROCK_MODEL=anthropic.claude-3-5-haiku-20241022-v1:0
 FILE_REVIEW_OLLAMA_URL=http://127.0.0.1:11434
 FILE_REVIEW_TIMEOUT_SECONDS=45
 FILE_REVIEW_MAX_UPLOAD_MB=20
@@ -192,6 +200,25 @@ Important notes:
 - `CORS_ORIGINS` is a comma-separated string. For multiple origins, use `http://10.0.0.7,https://your-domain.example`.
 - Because Nginx is on a different server, do not bind the backend to `127.0.0.1`. Use `APP_HOST=0.0.0.0` and start Uvicorn with `--host 0.0.0.0`, or bind specifically to `10.0.0.9`.
 - If Ollama is not on `10.0.0.9`, change both `BUSINESS_SENSITIVE_OLLAMA_URL` and `FILE_REVIEW_OLLAMA_URL` to the actual internal URL.
+- If AWS Bedrock is enabled, attach an IAM role or configure AWS SDK credentials on `10.0.0.9`; the app does not store a Bedrock API key.
+
+### 2.2.1 AWS Bedrock Runtime
+
+If you use AWS Bedrock for chat or business-sensitive scanning, configure the backend server with an IAM role or AWS SDK credential chain that can invoke the target Bedrock models.
+
+Minimum IAM action for non-streaming calls:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "bedrock:InvokeModel"
+  ],
+  "Resource": "*"
+}
+```
+
+Also confirm in the AWS Bedrock console that the selected model is enabled in `BEDROCK_REGION`. The model string can be a base model ID, an inference profile ID, or an ARN supported by Bedrock Converse.
 
 ### 2.3 Database Migration
 
@@ -716,4 +743,3 @@ cd G:\nginx\nginx-1.31.3
 .\nginx.exe -t
 .\nginx.exe -s reload
 ```
-

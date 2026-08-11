@@ -54,7 +54,7 @@ BusinessSensitiveCategoryName = Literal[
     "insurance_party_data",
 ]
 BusinessSensitiveRiskLevel = Literal["low", "medium", "high"]
-BusinessSensitiveProvider = Literal["ollama", "qwen"]
+BusinessSensitiveProvider = Literal["ollama", "qwen", "bedrock"]
 
 
 class BusinessSensitiveCategory(BaseModel):
@@ -204,6 +204,78 @@ class OpenAICompatibleBusinessSensitiveClient:
         )
 
 
+class BedrockBusinessSensitiveClient:
+    def __init__(self, *, region_name: str, timeout_seconds: float, model: str) -> None:
+        self.region_name = region_name
+        self.timeout_seconds = timeout_seconds
+        self.model = model
+        settings = get_settings()
+        try:
+            import boto3
+            from botocore.config import Config
+            from botocore.exceptions import BotoCoreError, ClientError
+
+            session_kwargs = {}
+            if settings.bedrock_profile_name.strip():
+                session_kwargs["profile_name"] = settings.bedrock_profile_name.strip()
+            self._boto_core_error = BotoCoreError
+            self._client_error = ClientError
+            session = boto3.Session(**session_kwargs)
+            self.client = session.client(
+                "bedrock-runtime",
+                region_name=region_name,
+                config=Config(
+                    connect_timeout=timeout_seconds,
+                    read_timeout=timeout_seconds,
+                    retries={"max_attempts": 2},
+                ),
+            )
+        except Exception as exc:
+            logger.warning("BusinessSensitive Bedrock client initialization failed. reason=%s", exc)
+            raise
+
+    def generate(self, prompt: str) -> ModelGenerateResponse:
+        try:
+            response = self.client.converse(
+                modelId=self.model,
+                system=[
+                    {
+                        "text": (
+                            "You are a business-sensitive information classifier. "
+                            "Return only one valid JSON object and no markdown."
+                        ),
+                    }
+                ],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [{"text": prompt}],
+                    }
+                ],
+                inferenceConfig={
+                    "temperature": 0,
+                    "topP": 0.1,
+                    "maxTokens": 512,
+                },
+            )
+        except self._client_error as exc:
+            detail = exc.response.get("Error", {}).get("Message") or str(exc)
+            logger.warning("BusinessSensitive Bedrock request rejected. detail=%s", detail)
+            raise
+        except self._boto_core_error as exc:
+            logger.warning("BusinessSensitive Bedrock request failed. reason=%s", exc)
+            raise
+
+        message = ((response.get("output") or {}).get("message") or {})
+        blocks = message.get("content") or []
+        raw_text = "\n".join(
+            str(block.get("text") or "")
+            for block in blocks
+            if isinstance(block, dict) and block.get("text")
+        )
+        return ModelGenerateResponse(raw_text=raw_text, model=self.model)
+
+
 class BusinessSensitiveScanner:
     SCANNER_NAME = "Business Sensitive"
 
@@ -245,7 +317,7 @@ class BusinessSensitiveScanner:
             runtime = self._resolve_runtime_config(db)
         except Exception:
             return False
-        return bool(runtime.provider == "ollama" or runtime.api_key)
+        return bool(runtime.provider in {"ollama", "bedrock"} or runtime.api_key)
 
     def describe_runtime(self, db: Session | None = None) -> str:
         try:
@@ -258,6 +330,13 @@ class BusinessSensitiveScanner:
             return (
                 f"Model: Aliyun Bailian {runtime.model}. "
                 f"Base URL: {runtime.base_url}. API key: {configured}. "
+                "Structured JSON is validated with safe fallback behavior."
+            )
+        if runtime.provider == "bedrock":
+            return (
+                f"Model: AWS Bedrock {runtime.model}. "
+                f"Region: {get_settings().bedrock_region}. "
+                "AWS credentials are resolved through the default SDK credential chain. "
                 "Structured JSON is validated with safe fallback behavior."
             )
         return (
@@ -324,6 +403,14 @@ class BusinessSensitiveScanner:
                 display_name=display_name,
             )
 
+        if provider == "bedrock":
+            return BusinessSensitiveRuntimeConfig(
+                provider="bedrock",
+                model=model or settings.business_sensitive_bedrock_model or settings.bedrock_default_model,
+                base_url=f"bedrock-runtime.{settings.bedrock_region}.amazonaws.com",
+                display_name="AWS Bedrock",
+            )
+
         return BusinessSensitiveRuntimeConfig(
             provider="ollama",
             model=model or settings.business_sensitive_model or "qwen3.5:4b",
@@ -340,6 +427,12 @@ class BusinessSensitiveScanner:
                 model=runtime.model,
                 provider_label=runtime.display_name or "Aliyun Bailian",
             )
+        if runtime.provider == "bedrock":
+            return BedrockBusinessSensitiveClient(
+                region_name=get_settings().bedrock_region,
+                timeout_seconds=self.timeout_seconds,
+                model=runtime.model,
+            )
         return OllamaClient(
             base_url=runtime.base_url,
             timeout_seconds=self.timeout_seconds,
@@ -350,12 +443,16 @@ class BusinessSensitiveScanner:
         value = (provider or "").strip().lower()
         if value == "qwen":
             return "qwen"
+        if value == "bedrock":
+            return "bedrock"
         return "ollama"
 
     def _default_model_for_provider(self, provider: BusinessSensitiveProvider) -> str:
         settings = get_settings()
         if provider == "qwen":
             return settings.business_sensitive_qwen_model or "deepseek-v4-flash"
+        if provider == "bedrock":
+            return settings.business_sensitive_bedrock_model or settings.bedrock_default_model
         return settings.business_sensitive_model or "qwen3.5:4b"
 
     def _parse_result(self, response: ModelGenerateResponse) -> BusinessSensitiveResult:

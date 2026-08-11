@@ -25,6 +25,8 @@ def preview_message(
         return ChatService(db).preview_message(payload, username=current_user.username)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except GuardrailViolationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/confirm", response_model=AssistantReplyResponse, status_code=status.HTTP_201_CREATED)

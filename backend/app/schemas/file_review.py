@@ -1,15 +1,24 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
 class FileStorageSettingsResponse(BaseModel):
     default_storage_path: str
+    active_storage_profile: Literal["windows", "linux"]
+    windows_storage_path: str
+    linux_storage_path: str
+    per_user_subdirectories: bool
     max_upload_mb: int
 
 
 class FileStorageSettingsUpdateRequest(BaseModel):
-    default_storage_path: str = Field(min_length=1, max_length=1024)
+    default_storage_path: str | None = Field(default=None, min_length=1, max_length=1024)
+    active_storage_profile: Literal["windows", "linux"] | None = None
+    windows_storage_path: str | None = Field(default=None, min_length=1, max_length=1024)
+    linux_storage_path: str | None = Field(default=None, min_length=1, max_length=1024)
+    per_user_subdirectories: bool | None = None
 
 
 class ExtractedSegment(BaseModel):

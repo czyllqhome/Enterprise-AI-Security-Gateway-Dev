@@ -1,9 +1,13 @@
 from datetime import datetime
+import json
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models.chat_message import ChatMessage
+from ..models.uploaded_file import UploadedFile
+from ..models.user import User
 from ..schemas.messages import AssistantReplyResponse, ChatConfirmRequest, ChatPreviewRequest, ChatPreviewResponse
 from .guardrails.llm_guard_service import get_guardrail_service
 from .llm.openai_client import LLMProviderError
@@ -19,6 +23,7 @@ class GuardrailViolationError(Exception):
 
 
 class ChatService:
+    MAX_ATTACHMENT_TEXT_CHARS = 12000
     SYSTEM_PLACEHOLDER_INSTRUCTION = (
         "You are assisting with a privacy-preserving chat. "
         "If the conversation contains placeholders like [REDACTED_EMAIL_ADDRESS_1], "
@@ -48,7 +53,12 @@ class ChatService:
     def preview_message(self, payload: ChatPreviewRequest, username: str) -> ChatPreviewResponse:
         session = self.session_service.get_session(payload.session_id, username=username)
         enabled_scanners = self.setting_service.get_enabled_scanners()
-        scan = self.guardrail_service.scan_text(payload.message, enabled_scanners=enabled_scanners, db=self.db)
+        message = self._build_message_with_attachment_context(
+            payload.message,
+            attachment_file_id=payload.attachment_file_id,
+            username=username,
+        )
+        scan = self.guardrail_service.scan_text(message, enabled_scanners=enabled_scanners, db=self.db)
         status = (
             "blocked"
             if self._should_block_scan(scan)
@@ -95,6 +105,7 @@ class ChatService:
         return ChatPreviewResponse(
             scan_event_id=event.id,
             session_id=session.id,
+            attachment_file_id=payload.attachment_file_id,
             status=status,
             blocked_reason=scan.blocked_reason,
             original_message=scan.original_text,
@@ -118,7 +129,12 @@ class ChatService:
             if payload.enabled_scanners is not None
             else self.setting_service.get_enabled_scanners()
         )
-        scan = self.guardrail_service.scan_text(payload.original_message, enabled_scanners=enabled_scanners, db=self.db)
+        original_message = self._build_message_with_attachment_context(
+            payload.original_message,
+            attachment_file_id=payload.attachment_file_id,
+            username=username,
+        )
+        scan = self.guardrail_service.scan_text(original_message, enabled_scanners=enabled_scanners, db=self.db)
         event = self.scan_event_service.get_event(payload.scan_event_id) if payload.scan_event_id else None
 
         if self._should_block_scan(scan):
@@ -204,6 +220,64 @@ class ChatService:
             user_message=user_message,
             assistant_message=assistant_message,
         )
+
+    def _build_message_with_attachment_context(
+        self,
+        message: str,
+        *,
+        attachment_file_id: int | None,
+        username: str,
+    ) -> str:
+        prompt = (message or "").strip()
+        if attachment_file_id is None:
+            return prompt
+
+        attachment = self._get_accessible_attachment(attachment_file_id, username=username)
+        if attachment.status != "completed":
+            raise GuardrailViolationError("Attachment review is not complete yet.")
+
+        review_payload = self._load_json_payload(attachment.review_result_json)
+        if (
+            isinstance(review_payload, dict)
+            and review_payload.get("contains_business_sensitive")
+            and review_payload.get("risk_level") == "high"
+        ):
+            raise GuardrailViolationError("High-risk attachment content cannot be sent to the model.")
+
+        extracted_text = (attachment.extracted_text or "").strip()
+        if not extracted_text:
+            raise GuardrailViolationError("No readable text was extracted from the attachment.")
+
+        marker = f"[Attachment: {attachment.original_filename}]"
+        if marker in prompt and "Extracted content:" in prompt:
+            return prompt
+
+        summary = (attachment.extraction_summary or "").strip()
+        review_summary = str(review_payload.get("summary") or "").strip() if isinstance(review_payload, dict) else ""
+        parts = [
+            prompt or "Please summarize the attached file.",
+            "",
+            marker,
+            summary and f"Extraction summary: {summary}",
+            review_summary and f"Security review: {review_summary}",
+            f"Extracted content:\n{extracted_text[:self.MAX_ATTACHMENT_TEXT_CHARS]}",
+        ]
+        return "\n".join(str(part) for part in parts if part)
+
+    def _get_accessible_attachment(self, file_id: int, *, username: str) -> UploadedFile:
+        user = self.db.scalar(select(User).where(User.username == username))
+        record = self.db.scalar(select(UploadedFile).where(UploadedFile.id == file_id))
+        if record is None or (record.uploaded_by != username and (user is None or user.role != "admin")):
+            raise GuardrailViolationError(f"Attachment {file_id} was not found.")
+        return record
+
+    def _load_json_payload(self, payload: Any) -> Any:
+        if not isinstance(payload, str):
+            return payload
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            return None
 
     def _build_llm_messages(self, session_id: int) -> list[dict[str, str]]:
         stmt = (

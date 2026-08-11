@@ -12,6 +12,7 @@ The backend provides:
 - OpenAI-compatible provider configuration for OpenAI, Qwen, OpenRouter, and Ollama
 - audit logs, scanner governance, management dashboards, and token usage estimates
 - Office, PDF, and image upload with extraction, OCR, and asynchronous content review
+- reviewed attachments can be attached to chat prompts by `attachment_file_id`, with extracted text appended server-side
 - authenticated chat, session, provider, attachment, and administration APIs
 
 ## Requirements
@@ -62,6 +63,10 @@ API_KEY_ENCRYPTION_SECRET=replace-with-another-long-random-secret
 DEFAULT_ADMIN_USERNAME=admin
 DEFAULT_ADMIN_PASSWORD=replace-with-a-strong-password
 CORS_ORIGINS=http://127.0.0.1:5173
+FILE_REVIEW_ACTIVE_STORAGE_PROFILE=windows
+FILE_REVIEW_WINDOWS_STORAGE_PATH=./uploaded-documents
+FILE_REVIEW_LINUX_STORAGE_PATH=/var/lib/ai-security-gateway/uploaded-documents
+FILE_REVIEW_PER_USER_STORAGE_DIRS=true
 ```
 
 The default admin is created only when `DEFAULT_ADMIN_PASSWORD` is non-empty and the configured username does not already exist.
@@ -112,14 +117,37 @@ Invoke-RestMethod http://127.0.0.1:8002/api/health
 
 - `POST /api/auth/login`
 - `GET /api/sessions`
-- `POST /api/chat/preview`
-- `POST /api/chat/confirm`
+- `POST /api/chat/preview` accepts `attachment_file_id` to include a reviewed upload in the scanned prompt
+- `POST /api/chat/confirm` accepts the same `attachment_file_id` to rebuild the approved attachment context before model dispatch
 - `GET /api/console/summary`
 - `GET /api/console/scanners`
 - `GET /api/console/token-usage`
 - `POST /api/file-review/files/upload`
+- `GET /api/file-review/settings`
+- `PUT /api/file-review/settings`
 - `GET /api/logs`
 - `GET /api/providers`
+
+## Attachment Storage
+
+File-review settings are stored in `system_settings` and can be managed from the React admin page at `/admin/configuration`.
+
+- `FILE_REVIEW_ACTIVE_STORAGE_PROFILE` chooses `windows` or `linux`.
+- `FILE_REVIEW_WINDOWS_STORAGE_PATH` stores the Windows landing path.
+- `FILE_REVIEW_LINUX_STORAGE_PATH` stores the Linux/cloud landing path.
+- `FILE_REVIEW_PER_USER_STORAGE_DIRS=true` writes files beneath a sanitized username subdirectory.
+
+Only the active runtime profile path is created on the current host. The inactive platform path is stored as text so a Windows admin can prepare Linux deployment paths without rewriting them.
+
+## Chat Attachments
+
+The upload flow is intentionally split from model dispatch:
+
+1. `POST /api/file-review/files/upload` persists the file and starts asynchronous extraction/review.
+2. The frontend polls `GET /api/file-review/files/{file_id}` until `status` is `completed`.
+3. `POST /api/chat/preview` receives the user message plus `attachment_file_id`.
+4. `ChatService` checks ownership/admin access, blocks incomplete or high-risk files, appends extracted text, and scans the combined prompt.
+5. `POST /api/chat/confirm` repeats the server-side attachment lookup before sending the approved prompt to the model.
 
 ## Local Model Cache
 
@@ -144,7 +172,7 @@ From `backend/`:
 uv run pytest
 ```
 
-The pytest configuration is present in `pyproject.toml`, but the current repository does not contain committed automated test files.
+The repository includes `tests/test_file_review_permissions.py`, covering file-review authorization, username-based storage, and chat attachment context behavior.
 
 ## Security Notes
 

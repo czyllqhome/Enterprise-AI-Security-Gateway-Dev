@@ -13,14 +13,27 @@ class FileStorageService:
         self.base_directory.mkdir(parents=True, exist_ok=True)
         return self.base_directory
 
-    def build_target_path(self, original_filename: str) -> Path:
-        self.ensure_base_directory()
+    def build_target_path(
+        self,
+        original_filename: str,
+        *,
+        username: str | None = None,
+        use_user_directory: bool = True,
+    ) -> Path:
+        target_directory = self.ensure_base_directory()
+        if use_user_directory:
+            target_directory = target_directory / self._sanitize_component(username or "Guest")
+            target_directory.mkdir(parents=True, exist_ok=True)
         original_path = Path(original_filename or "upload")
         suffix = original_path.suffix.lower()
         stem = self._sanitize_stem(original_path.stem)[:80] or "upload"
         unique_name = f"{stem}-{uuid4().hex}{suffix}"
-        return self.base_directory / unique_name
+        return target_directory / unique_name
 
     def _sanitize_stem(self, value: str) -> str:
         candidate = re.sub(r"[^A-Za-z0-9._-]+", "-", value or "upload").strip("-._")
         return candidate or "upload"
+
+    def _sanitize_component(self, value: str) -> str:
+        candidate = re.sub(r"[^A-Za-z0-9._-]+", "-", value or "Guest").strip("-._")
+        return candidate or "Guest"

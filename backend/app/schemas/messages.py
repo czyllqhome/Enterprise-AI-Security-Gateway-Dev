@@ -22,12 +22,14 @@ class MessageResponse(BaseModel):
 class ChatPreviewRequest(BaseModel):
     session_id: int
     message: str
+    attachment_file_id: int | None = None
     username: str | None = None
 
 
 class ChatPreviewResponse(BaseModel):
     scan_event_id: int | None = None
     session_id: int
+    attachment_file_id: int | None = None
     status: str
     blocked_reason: str | None = None
     original_message: str
@@ -48,6 +50,7 @@ class ChatConfirmRequest(BaseModel):
     session_id: int
     original_message: str
     sanitized_message: str
+    attachment_file_id: int | None = None
     username: str | None = None
     scan_event_id: int | None = None
     enabled_scanners: list[str] | None = None

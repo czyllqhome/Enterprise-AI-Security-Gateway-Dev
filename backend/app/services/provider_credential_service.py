@@ -114,8 +114,8 @@ class ProviderCredentialService:
                 updated_at=None,
             )
 
-        models = list(definition.default_models)
-        default_model = credential.default_model if credential.default_model in models else definition.default_models[0]
+        models = self._normalize_models(credential.models_json, definition)
+        default_model = credential.default_model if credential.default_model in models else models[0]
         return ProviderCredentialResponse(
             provider=credential.provider,
             display_name=definition.display_name,
