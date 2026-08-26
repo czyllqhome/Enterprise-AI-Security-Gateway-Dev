@@ -12,14 +12,29 @@
 ## 当前项目状态
 
 - 已实现 JWT 登录、管理员鉴权、用户管理和默认管理员初始化。
-- 已实现用户聊天、会话管理、聊天预扫描和确认发送流程。
+- 已实现用户聊天、会话管理、聊天预扫描、一次性扫描凭证和流式确认发送流程。
 - 已实现敏感信息识别、脱敏占位、提示注入检测、限制主题检测、源代码阻断和商务敏感内容扫描。
-- 已实现 OpenAI 兼容模型提供商配置，当前覆盖 OpenAI、阿里云百炼/Qwen、OpenRouter 和 Ollama。
-- 已实现管理员控制台、扫描器开关、审计日志、Token Usage 估算和 14 天趋势统计。
-- 已实现附件上传、Office/PDF/图片文本提取、OCR 和异步文件内容审核。
+- 已实现 OpenAI、阿里云百炼/Qwen、OpenRouter、AWS Bedrock 和 Ollama 模型提供商配置。
+- 已实现管理员控制台、扫描器开关/严格模式、扫描性能统计、审计日志、Token Usage 估算和 14 天趋势统计。
+- 已实现附件流式上传、Office/PDF/图片文本提取、OCR 和基于 PostgreSQL 持久队列的异步文件内容审核。
 - 后端使用 PostgreSQL 和 Alembic 迁移；启动时仍保留 `Base.metadata.create_all` 与兼容性补字段逻辑。
-- 当前存在后端测试 `backend/tests/test_file_review_permissions.py`；前端暂未发现单元测试或 E2E 测试配置。
+- 当前后端包含文件权限和聊天扫描性能测试；前端暂未发现单元测试或 E2E 测试配置。
 - 仓库中仍保留 `backend/app/static/` 旧静态页面资源，但主线前端已经迁移到 `frontend/`。
+
+## 最近更新（2026-08）
+
+- 聊天扫描器改为并行执行，并为各扫描器设置独立超时、工作线程和总扫描截止时间；响应会返回总耗时及降级扫描器，管理员可通过 `GET /api/console/performance` 查看 p50、p95、p99、错误和超时指标。
+- `POST /api/chat/preview` 会签发短时、一次性的 `scan_proof`。普通确认与流式确认都会校验用户、会话、输入摘要、附件和扫描器配置，防止绕过扫描、篡改内容或重复使用扫描结果。
+- 新增 `POST /api/chat/confirm/stream`，以前端可逐段展示的 NDJSON 事件流返回模型输出；只有流式响应完整结束后才持久化消息，失败或客户端中断会记录发送失败状态。
+- 新增扫描器严格模式：严格模式下，已启用扫描器不可用、报错或超时会按失败关闭策略阻止请求；管理端 `/admin/scanners` 可切换该模式。
+- 新增 `GET /api/health/ready` 就绪检查，用于验证启用的扫描器和生产环境扫描凭证密钥；不满足条件时返回 `503`，原有 `GET /api/health` 继续作为存活检查。
+- 文件审核由进程内临时后台任务升级为 PostgreSQL 持久队列，支持任务租约、`SKIP LOCKED` 并发领取、失败重试和进程重启后的过期任务恢复。单进程开发默认使用内嵌 worker，多实例部署应使用独立 worker。
+- 上传接口改为分块写入文件，避免将完整附件一次性加载到内存；文件审核新增并行分块和最大分块数配置。
+- 增加数据库连接池、聊天上下文 token/消息上限、会话查询上限和管理查询时间窗口，减少长会话和大数据量下的资源占用。
+- LLM 客户端增加复用缓存，OpenAI 兼容接口、AWS Bedrock 和 Ollama 均支持流式输出。
+- 新增扫描器资产预准备和基准脚本，部署前可提前准备 Privacy Filter tokenizer，并验证 Qwen3Guard 实际运行设备及预热后的延迟。
+- 新增 Alembic 迁移 `20260824_0002`、`20260824_0003` 和 `20260825_0004`；升级代码后必须执行 `uv run alembic upgrade head`。
+- 云部署 SOP 补充了前端、后端和数据库三层 AWS Security Group 规则，以及 Bedrock/外部模型、Ollama 和 PostgreSQL 的最小网络路径。
 
 ## 技术栈
 
@@ -29,7 +44,7 @@
 - FastAPI、Uvicorn、SQLAlchemy、Alembic
 - pydantic-settings，读取 `backend/.env`
 - JWT 认证，`passlib[bcrypt]` 密码哈希
-- OpenAI Python SDK，按 OpenAI 兼容接口接入 OpenAI、Qwen、OpenRouter 和 Ollama
+- OpenAI Python SDK、AWS SDK，接入 OpenAI、Qwen、OpenRouter、AWS Bedrock 和 Ollama
 - `llm-guard`、OpenAI Privacy Filter、Qwen3Guard、自定义中英文规则和本地/远端商务敏感扫描
 - `python-docx`、`openpyxl`、`python-pptx`、`pymupdf`、`pillow`、`paddleocr`、`paddlepaddle`
 - pytest、pytest-asyncio、httpx
@@ -138,6 +153,9 @@ Copy-Item backend/.env.example backend/.env
 DATABASE_URL=postgresql+psycopg://ai_guard_user:change-me-strong-password@127.0.0.1:5432/ai_guard
 JWT_SECRET_KEY=replace-with-a-long-random-secret
 API_KEY_ENCRYPTION_SECRET=replace-with-another-long-random-secret
+SCAN_PROOF_SECRET=replace-with-at-least-32-random-bytes
+SCANNER_STRICT_MODE=true
+FILE_REVIEW_WORKER_MODE=embedded
 DEFAULT_ADMIN_USERNAME=admin
 DEFAULT_ADMIN_PASSWORD=replace-with-a-strong-password
 CORS_ORIGINS=http://127.0.0.1:5173
@@ -145,12 +163,19 @@ CORS_ORIGINS=http://127.0.0.1:5173
 
 只有 `DEFAULT_ADMIN_PASSWORD` 非空，且配置的管理员用户不存在时，后端启动才会创建默认管理员。
 
-安装依赖并执行迁移：
+安装依赖、执行迁移并准备扫描器资产：
 
 ```powershell
 Set-Location backend
 uv sync --group dev --link-mode=copy
 uv run alembic upgrade head
+uv run python scripts/prepare_scanner_assets.py
+```
+
+可在部署前运行扫描器基准，检查 Qwen3Guard 实际设备和预热后的 p50/p95 延迟：
+
+```powershell
+uv run python scripts/benchmark_scanners.py --samples 5
 ```
 
 ## 部署时数据库迁移
@@ -161,9 +186,10 @@ uv run alembic upgrade head
 cd /path/to/Enterprise-AI-Security-Gateway-Dev/backend
 uv sync --group dev --link-mode=copy
 uv run alembic upgrade head
+uv run python scripts/prepare_scanner_assets.py
 ```
 
-如果依赖已经在部署流程中安装完成，可以只执行：
+如果依赖和扫描器资产已经在部署流程中准备完成，可以只执行：
 
 ```bash
 cd /path/to/Enterprise-AI-Security-Gateway-Dev/backend
@@ -182,7 +208,8 @@ uv run uvicorn app.main:app --host 127.0.0.1 --port 8002 --reload
 
 - 服务元数据：`http://127.0.0.1:8002/`
 - API 文档：`http://127.0.0.1:8002/docs`
-- 健康检查：`http://127.0.0.1:8002/api/health`
+- 存活检查：`http://127.0.0.1:8002/api/health`
+- 就绪检查：`http://127.0.0.1:8002/api/health/ready`
 
 健康检查：
 
@@ -211,6 +238,7 @@ npm run dev
 - 用户管理：`http://127.0.0.1:5173/admin/users`
 - API Key 管理：`http://127.0.0.1:5173/admin/api-keys`
 - 扫描器管理：`http://127.0.0.1:5173/admin/scanners`
+- 系统配置：`http://127.0.0.1:5173/admin/configuration`
 - Token Usage：`http://127.0.0.1:5173/admin/token-usage`
 - 日志查看：`http://127.0.0.1:5173/admin/logs`
 
@@ -226,8 +254,11 @@ npm run build
 - `GET /api/sessions`
 - `POST /api/chat/preview`
 - `POST /api/chat/confirm`
+- `POST /api/chat/confirm/stream`
+- `GET /api/health/ready`
 - `GET /api/console/summary`
 - `GET /api/console/scanners`
+- `GET /api/console/performance`
 - `GET /api/console/dashboard`
 - `GET /api/console/token-usage`
 - `GET /api/logs`
@@ -238,10 +269,10 @@ npm run build
 
 聊天发送分为两步：
 
-1. 前端调用 `POST /api/chat/preview`，后端先扫描用户输入。
-2. 前端根据扫描结果决定阻断、展示确认，或调用 `POST /api/chat/confirm` 发送给模型。
+1. 前端调用 `POST /api/chat/preview`，后端并行扫描用户输入并为未阻断结果签发短时、一次性的 `scan_proof`。
+2. 前端根据扫描结果决定阻断、展示确认，或携带原扫描内容、实体和 `scan_proof` 调用 `POST /api/chat/confirm/stream`；保留的 `POST /api/chat/confirm` 可用于非流式调用。
 
-当扫描结果需要确认时，前端会展示原始内容、脱敏内容和实体类型，用户只能发送脱敏版本。命中源代码、提示注入、限制主题或高风险商务敏感内容时，后端会阻断模型调用。
+确认阶段不会重复执行扫描器，而是校验凭证、输入摘要、附件、扫描器配置和一次性消费状态。当扫描结果需要确认时，前端会展示原始内容、脱敏内容和实体类型，用户只能发送脱敏版本。命中源代码、提示注入、限制主题或高风险商务敏感内容时，后端会阻断模型调用。
 
 ## 文件上传与审核
 
@@ -257,7 +288,37 @@ npm run build
 - `.bmp`
 - `.webp`
 
-文件上传后由后端异步执行内容提取、OCR 和商务敏感审核。默认单文件上限为 20 MB，默认存储目录为 `backend/uploaded-documents`。
+文件上传采用分块写入，并在 PostgreSQL 中创建持久审核任务。worker 负责内容提取、OCR 和商务敏感审核，支持任务租约、并发领取、失败重试和异常退出恢复。默认单文件上限为 20 MB，默认存储目录为 `backend/uploaded-documents`。
+
+聊天输入栏会显示附件上传状态、提取摘要、风险状态和文本预览。前端在预扫描和确认请求中传递 `attachment_file_id`；后端只允许附件所有者或管理员访问，并会阻止仍在处理、无法读取或被判定为高风险的附件。管理员可在 `/admin/configuration` 配置 Windows/Linux 存储路径、当前存储配置和是否按用户名创建子目录。
+
+本地单进程开发默认使用内嵌 worker：
+
+```env
+FILE_REVIEW_WORKER_MODE=embedded
+```
+
+生产或多实例部署应让 Web 服务使用 `FILE_REVIEW_WORKER_MODE=external`，并单独启动 worker：
+
+```powershell
+Set-Location backend
+uv run python -m app.workers.file_review_worker
+```
+
+所有 API/worker 实例必须能访问同一文件目录；AWS 部署可将加密 EFS 挂载到 `FILE_REVIEW_LINUX_STORAGE_PATH`。不要把附件仅保存在 ECS 临时文件系统中。
+
+通过 ALB、Nginx 或其他反向代理暴露 `POST /api/chat/confirm/stream` 时，需要关闭响应缓冲，并将空闲超时设置为大于模型提供商的调用超时。
+
+## 新增关键配置
+
+- 扫描凭证：`SCAN_PROOF_SECRET`、`SCAN_PROOF_TTL_SECONDS`、`REQUIRE_SCAN_PROOF`
+- 扫描策略：`SCANNER_STRICT_MODE`、`SCANNER_TOTAL_DEADLINE_MS`、`SCANNER_EXECUTOR_WORKERS`
+- 扫描器资源：`PRIVACY_FILTER_TIMEOUT_MS`、`PRIVACY_FILTER_WORKERS`、`QWEN3GUARD_DEVICE`、`QWEN3GUARD_TIMEOUT_MS`、`QWEN3GUARD_WORKERS`、`BUSINESS_SENSITIVE_TIMEOUT_MS`、`BUSINESS_SENSITIVE_WORKERS`
+- 文件存储与队列：`FILE_REVIEW_ACTIVE_STORAGE_PROFILE`、`FILE_REVIEW_WINDOWS_STORAGE_PATH`、`FILE_REVIEW_LINUX_STORAGE_PATH`、`FILE_REVIEW_PER_USER_STORAGE_DIRS`、`FILE_REVIEW_WORKER_MODE`、`FILE_REVIEW_WORKER_POLL_SECONDS`、`FILE_REVIEW_JOB_LEASE_SECONDS`、`FILE_REVIEW_JOB_MAX_ATTEMPTS`、`FILE_REVIEW_CHUNK_WORKERS`、`FILE_REVIEW_MAX_CHUNKS`
+- 数据库连接池：`DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT_SECONDS`、`DB_POOL_RECYCLE_SECONDS`
+- 查询与上下文限制：`CHAT_CONTEXT_TOKEN_BUDGET`、`CHAT_CONTEXT_MAX_MESSAGES`、`SESSION_LIST_LIMIT`、`SESSION_DETAIL_MESSAGE_LIMIT`、`ADMIN_QUERY_LOOKBACK_DAYS`、`ADMIN_QUERY_MAX_ROWS`
+
+生产环境必须将 `SCAN_PROOF_SECRET` 设置为至少 32 个随机字节，且不能使用示例值，否则就绪检查不会通过。
 
 ## 本地模型与缓存
 
@@ -284,6 +345,7 @@ uv run pytest
 当前已发现的测试文件：
 
 - `backend/tests/test_file_review_permissions.py`
+- `backend/tests/test_chat_scan_performance.py`
 
 前端当前仅配置了构建脚本，未发现单元测试或 E2E 测试脚本。
 
@@ -295,11 +357,4 @@ uv run pytest
 - 默认 CORS 仅允许 `http://127.0.0.1:5173`，更换前端地址时需要同步更新 `CORS_ORIGINS`。
 - `Base.metadata.create_all` 和 Alembic 迁移同时存在；生产化前应明确数据库迁移策略，避免仅依赖自动建表。
 - 文件审核、Privacy Filter、Qwen3Guard、PaddleOCR 和 Ollama 相关能力可能在首次运行时下载或加载较大的模型文件。
-
-## Latest Feature Notes
-
-- The chat composer supports Office, PDF, and image attachments. After upload, the frontend shows a compact attachment preview below the prompt with upload status, extracted summary, risk status, and a short extracted-text preview.
-- Attachment chat requests pass `attachment_file_id` through `POST /api/chat/preview` and `POST /api/chat/confirm`. The backend loads the reviewed attachment from `uploaded_files`, appends extracted text to the model prompt, and blocks incomplete, unreadable, or high-risk attachments.
-- Admins can configure attachment storage in the React admin console at `/admin/configuration`. The Configuration page stores Windows and Linux storage paths, an active storage profile, and whether uploads should be organized into username subdirectories.
-- Relevant file-review environment variables are `FILE_REVIEW_ACTIVE_STORAGE_PROFILE`, `FILE_REVIEW_WINDOWS_STORAGE_PATH`, `FILE_REVIEW_LINUX_STORAGE_PATH`, and `FILE_REVIEW_PER_USER_STORAGE_DIRS`.
-- Local sample attachments should remain outside git; `attachments_testfiles/` is ignored.
+- 本地示例附件应放在已忽略的 `attachments_testfiles/` 中，不要提交到版本库。

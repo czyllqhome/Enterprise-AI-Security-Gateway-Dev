@@ -60,6 +60,10 @@ class UploadedFileResponse(BaseModel):
     storage_path: str
     uploaded_by: str
     status: str
+    attempt_count: int = 0
+    next_attempt_at: datetime | None = None
+    processing_started_at: datetime | None = None
+    completed_at: datetime | None = None
     extraction_summary: str | None
     extracted_text: str | None
     extracted_segments: list[ExtractedSegment]

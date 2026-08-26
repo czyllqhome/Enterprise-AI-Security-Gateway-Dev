@@ -4,6 +4,10 @@ import logging
 import os
 import re
 import threading
+import time
+import hashlib
+import json
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import replace
 from importlib.util import find_spec
 from pathlib import Path
@@ -13,6 +17,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
+from ...core.config import get_settings
 from ...core.model_cache import configure_local_model_cache
 from ...schemas.guardrail import GuardrailEntity, GuardrailScanResult
 from ..system_setting_service import INPUT_SCANNER_IDS
@@ -31,6 +36,13 @@ logger = logging.getLogger(__name__)
 LOCAL_MODEL_CACHE_ROOT = configure_local_model_cache()
 _GUARDRAIL_SERVICE_LOCK = threading.Lock()
 _GUARDRAIL_SERVICE_SINGLETON: "GuardrailService | None" = None
+
+
+class GuardrailUnavailableError(RuntimeError):
+    def __init__(self, degraded_scanners: list[str], scanner_timings: dict[str, dict[str, Any]]) -> None:
+        self.degraded_scanners = degraded_scanners
+        self.scanner_timings = scanner_timings
+        super().__init__(f"Required scanners are unavailable: {', '.join(degraded_scanners)}")
 
 try:
     from llm_guard.input_scanners import BanCode
@@ -205,26 +217,123 @@ def _build_local_bancode_model(model: Any | None) -> Any | None:
 
 class GuardrailService:
     def __init__(self) -> None:
+        self.settings = get_settings()
         self._privacy_filter_scanner = self._build_privacy_filter_scanner()
         self._bancode_scanner = self._build_bancode_scanner()
         self._qwen3guard_scanner = self._build_qwen3guard_scanner()
         self._prompt_injection_scanner = self._qwen3guard_scanner
         self._ban_topics_scanner = self._qwen3guard_scanner
         self._business_sensitive_scanner = self._build_business_sensitive_scanner()
+        self._executors = {
+            "qwen3guard": ThreadPoolExecutor(
+                max_workers=max(self.settings.qwen3guard_workers, 1),
+                thread_name_prefix="scanner-qwen3guard",
+            ),
+            "privacy_filter": ThreadPoolExecutor(
+                max_workers=max(self.settings.privacy_filter_workers, 1),
+                thread_name_prefix="scanner-privacy-filter",
+            ),
+            "business_sensitive": ThreadPoolExecutor(
+                max_workers=max(self.settings.business_sensitive_workers, 1),
+                thread_name_prefix="scanner-business-sensitive",
+            ),
+            "bancode": ThreadPoolExecutor(
+                max_workers=max(min(self.settings.scanner_executor_workers, 2), 1),
+                thread_name_prefix="scanner-bancode",
+            ),
+        }
 
     def scan_text(
         self,
         text: str,
         enabled_scanners: list[str] | None = None,
         db: Session | None = None,
+        business_runtime: Any | None = None,
+        business_runtime_unavailable: bool = False,
+        strict_mode: bool | None = None,
     ) -> GuardrailScanResult:
+        scan_started = time.perf_counter()
         enabled = self._normalize_enabled_scanners(enabled_scanners)
         enabled_set = set(enabled)
-        qwen3guard_moderation = None
-        if enabled_set & {"prompt_injection", "ban_topics"}:
-            qwen3guard_moderation = self._scan_with_qwen3guard(text)
+        scanner_timings: dict[str, dict[str, Any]] = {}
+        degraded_scanners: list[str] = []
+        futures: dict[str, Future] = {}
 
-        bancode_triggered = self._scan_with_bancode(text) if "bancode" in enabled_set else False
+        if enabled_set & {"prompt_injection", "ban_topics"}:
+            futures["qwen3guard"] = self._submit_scanner(
+                "qwen3guard",
+                lambda: self._scan_qwen3guard_or_raise(text),
+            )
+        if "bancode" in enabled_set:
+            futures["bancode"] = self._submit_scanner("bancode", lambda: self._scan_with_bancode(text))
+        if "privacy_filter" in enabled_set:
+            futures["privacy_filter"] = self._submit_scanner(
+                "privacy_filter",
+                lambda: self._scan_privacy_filter_or_raise(text),
+            )
+        if "business_sensitive" in enabled_set:
+            if business_runtime_unavailable:
+                degraded_scanners.append("business_sensitive")
+                scanner_timings["business_sensitive"] = {
+                    "status": "error",
+                    "queue_ms": 0.0,
+                    "execution_ms": 0.0,
+                    "total_ms": 0.0,
+                    "error": "RuntimeUnavailable",
+                }
+            else:
+                try:
+                    runtime = business_runtime or self._resolve_business_sensitive_runtime(db)
+                    futures["business_sensitive"] = self._submit_scanner(
+                        "business_sensitive",
+                        lambda: self._scan_business_sensitive_or_raise(text, runtime),
+                    )
+                except Exception as exc:
+                    degraded_scanners.append("business_sensitive")
+                    scanner_timings["business_sensitive"] = {
+                        "status": "error",
+                        "queue_ms": 0.0,
+                        "execution_ms": 0.0,
+                        "total_ms": 0.0,
+                        "error": type(exc).__name__,
+                    }
+
+        timeout_seconds = max(self.settings.scanner_total_deadline_ms, 1) / 1000
+        done, not_done = wait(set(futures.values()), timeout=timeout_seconds)
+        future_names = {future: name for name, future in futures.items()}
+        values: dict[str, Any] = {}
+        for future in done:
+            name = future_names[future]
+            outcome = future.result()
+            scanner_timings[name] = outcome["timing"]
+            if outcome["error"] is not None:
+                degraded_scanners.append(name)
+            else:
+                values[name] = outcome["value"]
+        for future in not_done:
+            name = future_names[future]
+            future.cancel()
+            degraded_scanners.append(name)
+            scanner_timings[name] = {
+                "status": "timeout",
+                "queue_ms": 0.0,
+                "execution_ms": 0.0,
+                "total_ms": round(timeout_seconds * 1000, 3),
+                "error": "ScannerTimeout",
+            }
+
+        degraded_scanners = list(dict.fromkeys(degraded_scanners))
+        required_failures = [
+            name
+            for name in degraded_scanners
+            if name in {"qwen3guard", "privacy_filter", "business_sensitive"}
+        ]
+        effective_strict_mode = self.settings.scanner_strict_mode if strict_mode is None else strict_mode
+        if required_failures and effective_strict_mode:
+            raise GuardrailUnavailableError(required_failures, scanner_timings)
+
+        qwen3guard_moderation = values.get("qwen3guard", Qwen3GuardModerationResult())
+        bancode_triggered = bool(values.get("bancode", False))
         prompt_injection_triggered = (
             self._scan_with_prompt_injection(text, qwen3guard_moderation)
             if "prompt_injection" in enabled_set
@@ -235,14 +344,29 @@ class GuardrailService:
             if "ban_topics" in enabled_set
             else []
         )
-        business_sensitive_result = (
-            self._scan_with_business_sensitive(text, db=db)
-            if "business_sensitive" in enabled_set
-            else BusinessSensitiveScanner.fallback_result(summary="Business Sensitive scanner disabled.")
+        business_sensitive_result = values.get(
+            "business_sensitive",
+            BusinessSensitiveScanner.fallback_result(
+                summary=(
+                    "Business-sensitive scan degraded."
+                    if "business_sensitive" in enabled_set
+                    else "Business Sensitive scanner disabled."
+                ),
+            ),
         )
-        privacy_filter_matches = self._scan_with_privacy_filter(text) if "privacy_filter" in enabled_set else []
+        privacy_filter_matches = values.get("privacy_filter", [])
         privacy_filter_matches = self._reclassify_chinese_id_account_numbers(privacy_filter_matches)
+        custom_started = time.perf_counter()
         custom_matches = self._scan_with_custom_patterns(text) if "custom_regex" in enabled_set else []
+        custom_elapsed = (time.perf_counter() - custom_started) * 1000
+        if "custom_regex" in enabled_set:
+            scanner_timings["custom_regex"] = {
+                "status": "ok",
+                "queue_ms": 0.0,
+                "execution_ms": round(custom_elapsed, 3),
+                "total_ms": round(custom_elapsed, 3),
+                "error": None,
+            }
         raw_entities = self._deduplicate_entities(privacy_filter_matches + custom_matches)
         raw_entities = self._merge_adjacent_phone_entities(raw_entities, text)
         entities = normalize_entities(raw_entities)
@@ -306,8 +430,129 @@ class GuardrailService:
             scanners=scanners,
             enabled_scanners=enabled,
             entity_types=sorted({entity.type for entity in entities}),
+            scanner_timings=scanner_timings,
+            degraded_scanners=degraded_scanners,
+            scan_duration_ms=round((time.perf_counter() - scan_started) * 1000, 3),
             business_sensitive_result=business_sensitive_payload,
         )
+
+    def _submit_scanner(self, name: str, operation) -> Future:
+        submitted_at = time.perf_counter()
+
+        def invoke() -> dict[str, Any]:
+            started_at = time.perf_counter()
+            queue_ms = (started_at - submitted_at) * 1000
+            try:
+                value = operation()
+                error: Exception | None = None
+                status = "ok"
+            except Exception as exc:  # scanner failures are converted into explicit policy decisions
+                logger.warning("Scanner execution failed. scanner=%s reason=%s", name, exc)
+                value = None
+                error = exc
+                status = "error"
+            finished_at = time.perf_counter()
+            execution_ms = (finished_at - started_at) * 1000
+            return {
+                "value": value,
+                "error": error,
+                "timing": {
+                    "status": status,
+                    "queue_ms": round(queue_ms, 3),
+                    "execution_ms": round(execution_ms, 3),
+                    "total_ms": round((finished_at - submitted_at) * 1000, 3),
+                    "error": type(error).__name__ if error is not None else None,
+                },
+            }
+
+        return self._executors[name].submit(invoke)
+
+    def _scan_qwen3guard_or_raise(self, text: str) -> Qwen3GuardModerationResult:
+        if self._qwen3guard_scanner is None:
+            raise RuntimeError("Qwen3Guard is unavailable.")
+        return self._qwen3guard_scanner.scan_prompt(text)
+
+    def _scan_privacy_filter_or_raise(self, text: str) -> list[dict]:
+        if self._privacy_filter_scanner is None:
+            raise RuntimeError("Privacy Filter is unavailable.")
+        return self._privacy_filter_scanner.scan(text)
+
+    def _resolve_business_sensitive_runtime(self, db: Session | None):
+        if self._business_sensitive_scanner is None or not self._business_sensitive_scanner.enabled:
+            raise RuntimeError("Business Sensitive scanner is unavailable.")
+        return self._business_sensitive_scanner.resolve_runtime_config(db)
+
+    def _scan_business_sensitive_or_raise(self, text: str, runtime):
+        if self._business_sensitive_scanner is None:
+            raise RuntimeError("Business Sensitive scanner is unavailable.")
+        return self._business_sensitive_scanner.scan_or_raise(text, runtime=runtime)
+
+    def get_config_fingerprint(
+        self,
+        enabled_scanners: list[str],
+        *,
+        db: Session | None = None,
+        business_runtime: Any | None = None,
+        business_runtime_unavailable: bool = False,
+        strict_mode: bool | None = None,
+    ) -> str:
+        business_runtime_payload: dict[str, str] = {}
+        if "business_sensitive" in enabled_scanners:
+            if business_runtime_unavailable:
+                business_runtime_payload = {"status": "unavailable"}
+            else:
+                try:
+                    runtime = business_runtime or self._resolve_business_sensitive_runtime(db)
+                    business_runtime_payload = {
+                        "provider": runtime.provider,
+                        "model": runtime.model,
+                        "base_url": runtime.base_url,
+                    }
+                except Exception:
+                    business_runtime_payload = {"status": "unavailable"}
+        payload = {
+            "enabled_scanners": enabled_scanners,
+            "strict_mode": self.settings.scanner_strict_mode if strict_mode is None else strict_mode,
+            "qwen3guard_model": getattr(self._qwen3guard_scanner, "model_reference", None),
+            "qwen3guard_device": getattr(self._qwen3guard_scanner, "runtime_device", None),
+            "privacy_filter_model": getattr(self._privacy_filter_scanner, "model_reference", None),
+            "business_sensitive": business_runtime_payload,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        ).hexdigest()
+
+    def resolve_business_sensitive_runtime(self, db: Session | None = None):
+        return self._resolve_business_sensitive_runtime(db)
+
+    def get_readiness(
+        self,
+        enabled_scanners: list[str],
+        *,
+        db: Session | None = None,
+        strict_mode: bool | None = None,
+    ) -> dict[str, Any]:
+        availability = self.get_scanner_availability(db=db)
+        if "business_sensitive" in enabled_scanners and self._business_sensitive_scanner is not None:
+            availability["business_sensitive"] = self._business_sensitive_scanner.check_runtime(db=db)
+        missing_scanners = [scanner_id for scanner_id in enabled_scanners if not availability.get(scanner_id, False)]
+        critical_failures: list[str] = []
+        if self.settings.app_env.lower() not in {"development", "test"} and (
+            len(self.settings.scan_proof_secret.encode("utf-8")) < 32
+            or self.settings.scan_proof_secret.startswith("replace-")
+        ):
+            critical_failures.append("scan_proof_secret")
+        effective_strict_mode = self.settings.scanner_strict_mode if strict_mode is None else strict_mode
+        return {
+            "ready": not critical_failures and (not missing_scanners or not effective_strict_mode),
+            "strict_mode": effective_strict_mode,
+            "missing_scanners": missing_scanners + critical_failures,
+            "availability": availability,
+        }
+
+    def close(self) -> None:
+        for executor in self._executors.values():
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _normalize_enabled_scanners(self, enabled_scanners: list[str] | None) -> list[str]:
         if enabled_scanners is None:
@@ -340,6 +585,7 @@ class GuardrailService:
 
     def get_scanner_runtime_details(self, db: Session | None = None) -> dict[str, str]:
         prompt_injection_model = getattr(self._qwen3guard_scanner, "model_reference", None) or "Qwen/Qwen3Guard-Gen-0.6B"
+        qwen3guard_device = getattr(self._qwen3guard_scanner, "runtime_device", None) or "unavailable"
         bancode_model = self._get_model_path(self._bancode_scanner) or "LLM Guard BanCode heuristic fallback"
         ban_topics_model = getattr(self._qwen3guard_scanner, "model_reference", None) or "Qwen/Qwen3Guard-Gen-0.6B"
         privacy_filter_model = getattr(self._privacy_filter_scanner, "model_reference", None) or "local checkpoint unavailable"
@@ -352,12 +598,12 @@ class GuardrailService:
             ),
             "PromptInjection": (
                 "Model: "
-                f"{prompt_injection_model}. "
+                f"{prompt_injection_model} on {qwen3guard_device}. "
                 "Qwen3Guard local moderation flags jailbreak and prompt-injection attempts."
             ),
             "BanTopics": (
                 "Model: "
-                f"{ban_topics_model}. "
+                f"{ban_topics_model} on {qwen3guard_device}. "
                 "Qwen3Guard local moderation maps safety categories to project ban-topic labels."
             ),
             PRIVACY_FILTER_SCANNER_NAME: (
@@ -911,6 +1157,8 @@ def get_guardrail_service() -> GuardrailService:
 def _clear_guardrail_service_cache() -> None:
     global _GUARDRAIL_SERVICE_SINGLETON
     with _GUARDRAIL_SERVICE_LOCK:
+        if _GUARDRAIL_SERVICE_SINGLETON is not None:
+            _GUARDRAIL_SERVICE_SINGLETON.close()
         _GUARDRAIL_SERVICE_SINGLETON = None
 
 

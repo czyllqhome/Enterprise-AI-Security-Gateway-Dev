@@ -81,6 +81,10 @@ export type ChatPreview = {
   enabled_scanners: string[];
   entity_types: string[];
   business_sensitive_result: BusinessSensitiveResult;
+  scan_proof: string | null;
+  proof_expires_at: string | null;
+  degraded_scanners: string[];
+  scan_duration_ms: number;
 };
 
 export type UploadedFile = {
@@ -165,6 +169,7 @@ export type BusinessSensitiveScannerConfig = {
 export type ConsoleScannersResponse = {
   scanners: Scanner[];
   enabled_scanners: string[];
+  strict_mode: boolean;
   business_sensitive_config?: BusinessSensitiveScannerConfig | null;
 };
 

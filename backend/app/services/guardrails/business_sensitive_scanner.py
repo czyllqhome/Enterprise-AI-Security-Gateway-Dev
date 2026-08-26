@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Literal
 from urllib import error, request
@@ -88,9 +89,10 @@ class BusinessSensitiveRuntimeConfig:
 
 
 class OllamaClient:
-    def __init__(self, *, base_url: str, timeout_seconds: float, model: str) -> None:
+    def __init__(self, *, base_url: str, timeout_seconds: float, model: str, max_tokens: int = 1024) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.max_tokens = max_tokens
         self.model = model
 
     def generate(self, prompt: str) -> ModelGenerateResponse:
@@ -112,7 +114,7 @@ class OllamaClient:
                     "temperature": 0,
                     "top_p": 0.1,
                     "repeat_penalty": 1.0,
-                    "num_predict": 512,
+                    "num_predict": self.max_tokens,
                 },
             }
         ).encode("utf-8")
@@ -143,10 +145,20 @@ class OllamaClient:
 
 
 class OpenAICompatibleBusinessSensitiveClient:
-    def __init__(self, *, api_key: str, base_url: str, timeout_seconds: float, model: str, provider_label: str) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+        model: str,
+        provider_label: str,
+        max_tokens: int = 1024,
+    ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.max_tokens = max_tokens
         self.model = model
         self.provider_label = provider_label
 
@@ -166,7 +178,7 @@ class OpenAICompatibleBusinessSensitiveClient:
                 ],
                 "temperature": 0,
                 "top_p": 0.1,
-                "max_tokens": 512,
+                "max_tokens": self.max_tokens,
                 "response_format": {"type": "json_object"},
             }
         ).encode("utf-8")
@@ -205,9 +217,10 @@ class OpenAICompatibleBusinessSensitiveClient:
 
 
 class BedrockBusinessSensitiveClient:
-    def __init__(self, *, region_name: str, timeout_seconds: float, model: str) -> None:
+    def __init__(self, *, region_name: str, timeout_seconds: float, model: str, max_tokens: int = 1024) -> None:
         self.region_name = region_name
         self.timeout_seconds = timeout_seconds
+        self.max_tokens = max_tokens
         self.model = model
         settings = get_settings()
         try:
@@ -255,7 +268,7 @@ class BedrockBusinessSensitiveClient:
                 inferenceConfig={
                     "temperature": 0,
                     "topP": 0.1,
-                    "maxTokens": 512,
+                    "maxTokens": self.max_tokens,
                 },
             )
         except self._client_error as exc:
@@ -282,26 +295,23 @@ class BusinessSensitiveScanner:
     def __init__(self) -> None:
         settings = get_settings()
         self.enabled = settings.business_sensitive_enabled
-        self.timeout_seconds = settings.business_sensitive_timeout_seconds
+        self.timeout_seconds = min(
+            settings.business_sensitive_timeout_seconds,
+            max(settings.business_sensitive_timeout_ms, 1) / 1000,
+        )
+        self.max_tokens = max(settings.business_sensitive_max_tokens, 256)
         self.provider = self._normalize_provider(settings.business_sensitive_provider)
         self.model = self._default_model_for_provider(self.provider)
+        self._client_cache: dict[tuple[str, str, str, str], object] = {}
+        self._client_cache_lock = threading.Lock()
 
     def scan(self, text: str, db: Session | None = None) -> BusinessSensitiveResult:
         candidate = (text or "").strip()
         if not candidate or not self.enabled:
             return self.fallback_result()
 
-        prompt = self._build_prompt(candidate)
         try:
-            runtime = self._resolve_runtime_config(db)
-            self.provider = runtime.provider
-            self.model = runtime.model
-            response = self._build_client(runtime).generate(prompt)
-            parsed = self._parse_result(response)
-            normalized = self._normalize_result(parsed)
-            if normalized.contains_business_sensitive:
-                self._log_hit(normalized)
-            return normalized
+            return self.scan_or_raise(candidate, runtime=self.resolve_runtime_config(db))
         except Exception as exc:
             logger.warning(
                 "BusinessSensitive scanner failed; using safe fallback. model=%s reason=%s",
@@ -309,6 +319,27 @@ class BusinessSensitiveScanner:
                 exc,
             )
             return self.fallback_result(summary="Business-sensitive scan failed; safe fallback result was used.")
+
+    def scan_or_raise(
+        self,
+        text: str,
+        *,
+        runtime: BusinessSensitiveRuntimeConfig,
+    ) -> BusinessSensitiveResult:
+        candidate = (text or "").strip()
+        if not candidate or not self.enabled:
+            return self.fallback_result()
+        self.provider = runtime.provider
+        self.model = runtime.model
+        response = self._get_client(runtime).generate(self._build_prompt(candidate))
+        parsed = self._parse_result(response)
+        normalized = self._normalize_result(parsed)
+        if normalized.contains_business_sensitive:
+            self._log_hit(normalized)
+        return normalized
+
+    def resolve_runtime_config(self, db: Session | None = None) -> BusinessSensitiveRuntimeConfig:
+        return self._resolve_runtime_config(db)
 
     def is_runtime_available(self, db: Session | None = None) -> bool:
         if not self.enabled:
@@ -318,6 +349,17 @@ class BusinessSensitiveScanner:
         except Exception:
             return False
         return bool(runtime.provider in {"ollama", "bedrock"} or runtime.api_key)
+
+    def check_runtime(self, db: Session | None = None) -> bool:
+        try:
+            runtime = self._resolve_runtime_config(db)
+            if runtime.provider != "ollama":
+                return bool(runtime.provider == "bedrock" or runtime.api_key)
+            req = request.Request(url=f"{runtime.base_url.rstrip('/')}/api/tags", method="GET")
+            with request.urlopen(req, timeout=min(self.timeout_seconds, 1.0)) as response:
+                return 200 <= int(getattr(response, "status", 200)) < 500
+        except Exception:
+            return False
 
     def describe_runtime(self, db: Session | None = None) -> str:
         try:
@@ -424,6 +466,7 @@ class BusinessSensitiveScanner:
                 api_key=runtime.api_key,
                 base_url=runtime.base_url,
                 timeout_seconds=self.timeout_seconds,
+                max_tokens=self.max_tokens,
                 model=runtime.model,
                 provider_label=runtime.display_name or "Aliyun Bailian",
             )
@@ -431,13 +474,24 @@ class BusinessSensitiveScanner:
             return BedrockBusinessSensitiveClient(
                 region_name=get_settings().bedrock_region,
                 timeout_seconds=self.timeout_seconds,
+                max_tokens=self.max_tokens,
                 model=runtime.model,
             )
         return OllamaClient(
             base_url=runtime.base_url,
             timeout_seconds=self.timeout_seconds,
+            max_tokens=self.max_tokens,
             model=runtime.model,
         )
+
+    def _get_client(self, runtime: BusinessSensitiveRuntimeConfig):
+        key = (runtime.provider, runtime.base_url, runtime.model, runtime.api_key)
+        with self._client_cache_lock:
+            client = self._client_cache.get(key)
+            if client is None:
+                client = self._build_client(runtime)
+                self._client_cache[key] = client
+            return client
 
     def _normalize_provider(self, provider: str) -> BusinessSensitiveProvider:
         value = (provider or "").strip().lower()

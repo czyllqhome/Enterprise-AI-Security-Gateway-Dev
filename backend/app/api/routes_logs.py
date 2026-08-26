@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from ..core.auth import require_admin
 from ..core.db import get_db
@@ -14,7 +14,9 @@ router = APIRouter(prefix="/api/logs", tags=["logs"])
 
 @router.get("", response_model=list[LogEntryResponse])
 def list_logs(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> list[LogEntryResponse]:
-    return LogService(db).list_logs()
+    return LogService(db).list_logs(limit=limit, offset=offset)

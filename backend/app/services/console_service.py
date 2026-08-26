@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -28,6 +28,8 @@ from ..schemas.console import (
     LastScanResponse,
     ManagementDashboardResponse,
     ScannerStatus,
+    ScannerPerformanceMetric,
+    ScannerPerformanceResponse,
     TokenUsageMonitoringResponse,
     TokenUsageTrendPoint,
     TokenUsageUserSummary,
@@ -89,6 +91,64 @@ class ConsoleService:
             alert_active=alert_active,
             alert_message=alert_message,
         )
+
+    def get_scanner_performance(self, window_hours: int = 24) -> ScannerPerformanceResponse:
+        normalized_hours = min(max(int(window_hours), 1), 24 * 30)
+        window_start = datetime.now(UTC) - timedelta(hours=normalized_hours)
+        events = list(
+            self.db.scalars(
+                select(ScanEvent)
+                .where(ScanEvent.created_at >= window_start)
+                .order_by(ScanEvent.created_at.desc(), ScanEvent.id.desc())
+                .limit(max(self.settings.admin_query_max_rows, 1)),
+            ).all(),
+        )
+        scan_durations = [float(event.scan_duration_ms or 0.0) for event in events]
+        scanner_values: dict[str, list[float]] = {}
+        scanner_errors: Counter[str] = Counter()
+        scanner_timeouts: Counter[str] = Counter()
+        degraded_scans = 0
+        for event in events:
+            if event.degraded_scanners_json:
+                degraded_scans += 1
+            for scanner, timing in (event.scanner_timings_json or {}).items():
+                if not isinstance(timing, dict):
+                    continue
+                scanner_values.setdefault(scanner, []).append(float(timing.get("total_ms") or 0.0))
+                status = str(timing.get("status") or "")
+                if status == "timeout":
+                    scanner_timeouts[scanner] += 1
+                elif status != "ok":
+                    scanner_errors[scanner] += 1
+        metrics = [
+            ScannerPerformanceMetric(
+                scanner=scanner,
+                requests=len(values),
+                errors=scanner_errors[scanner],
+                timeouts=scanner_timeouts[scanner],
+                p50_ms=self._percentile(values, 0.50),
+                p95_ms=self._percentile(values, 0.95),
+                p99_ms=self._percentile(values, 0.99),
+                max_ms=round(max(values, default=0.0), 3),
+            )
+            for scanner, values in sorted(scanner_values.items())
+        ]
+        return ScannerPerformanceResponse(
+            window_hours=normalized_hours,
+            total_scans=len(events),
+            degraded_scans=degraded_scans,
+            scan_p50_ms=self._percentile(scan_durations, 0.50),
+            scan_p95_ms=self._percentile(scan_durations, 0.95),
+            scan_p99_ms=self._percentile(scan_durations, 0.99),
+            scanners=metrics,
+        )
+
+    def _percentile(self, values: list[float], percentile: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        index = min(max(int(round((len(ordered) - 1) * percentile)), 0), len(ordered) - 1)
+        return round(ordered[index], 3)
 
     def get_scanners(self) -> ConsoleScannersResponse:
         availability = self.guardrail_service.get_scanner_availability(db=self.db)
@@ -156,11 +216,14 @@ class ConsoleService:
         return ConsoleScannersResponse(
             scanners=scanners,
             enabled_scanners=enabled_scanners,
+            strict_mode=self.setting_service.get_scanner_strict_mode(),
             business_sensitive_config=self.get_business_sensitive_config(),
         )
 
-    def update_scanners(self, enabled_scanners: list[str]) -> ConsoleScannersResponse:
+    def update_scanners(self, enabled_scanners: list[str], strict_mode: bool | None = None) -> ConsoleScannersResponse:
         self.setting_service.set_enabled_scanners(enabled_scanners)
+        if strict_mode is not None:
+            self.setting_service.set_scanner_strict_mode(strict_mode)
         return self.get_scanners()
 
     def get_business_sensitive_config(self) -> BusinessSensitiveScannerConfig:
@@ -233,11 +296,32 @@ class ConsoleService:
         )
 
     def get_management_dashboard(self) -> ManagementDashboardResponse:
-        scan_events = list(self.db.scalars(select(ScanEvent).order_by(ScanEvent.created_at.desc(), ScanEvent.id.desc())).all())
-        uploaded_files = list(
-            self.db.scalars(select(UploadedFile).order_by(UploadedFile.created_at.desc(), UploadedFile.id.desc())).all()
+        window_start = datetime.now(UTC) - timedelta(days=max(self.settings.admin_query_lookback_days, 1))
+        max_rows = max(self.settings.admin_query_max_rows, 1)
+        scan_events = list(
+            self.db.scalars(
+                select(ScanEvent)
+                .where(ScanEvent.created_at >= window_start)
+                .order_by(ScanEvent.created_at.desc(), ScanEvent.id.desc())
+                .limit(max_rows)
+            ).all()
         )
-        logs = list(self.db.scalars(select(ChatLog).order_by(ChatLog.created_at.desc(), ChatLog.id.desc())).all())
+        uploaded_files = list(
+            self.db.scalars(
+                select(UploadedFile)
+                .where(UploadedFile.created_at >= window_start)
+                .order_by(UploadedFile.created_at.desc(), UploadedFile.id.desc())
+                .limit(max_rows)
+            ).all()
+        )
+        logs = list(
+            self.db.scalars(
+                select(ChatLog)
+                .where(ChatLog.created_at >= window_start)
+                .order_by(ChatLog.created_at.desc(), ChatLog.id.desc())
+                .limit(max_rows)
+            ).all()
+        )
 
         total_requests = len(scan_events)
         blocked_requests = sum(1 for event in scan_events if event.status in {"blocked", "rejected"})
@@ -274,7 +358,15 @@ class ConsoleService:
     def get_token_usage_monitoring(self) -> TokenUsageMonitoringResponse:
         token_limit = 4096
         encoding_name = "cl100k_base"
-        scan_events = list(self.db.scalars(select(ScanEvent).order_by(ScanEvent.created_at.desc(), ScanEvent.id.desc())).all())
+        window_start = datetime.now(UTC) - timedelta(days=max(self.settings.admin_query_lookback_days, 1))
+        scan_events = list(
+            self.db.scalars(
+                select(ScanEvent)
+                .where(ScanEvent.created_at >= window_start)
+                .order_by(ScanEvent.created_at.desc(), ScanEvent.id.desc())
+                .limit(max(self.settings.admin_query_max_rows, 1))
+            ).all()
+        )
         per_user: dict[str, dict] = {}
         trend = self._build_empty_token_trend()
 
@@ -350,6 +442,7 @@ class ConsoleService:
             select(ScanEvent)
             .where(func.lower(ScanEvent.username) == normalized_username)
             .order_by(ScanEvent.updated_at.desc(), ScanEvent.id.desc())
+            .limit(max(self.settings.admin_query_max_rows, 1))
         )
         events = list(self.db.scalars(stmt).all())
         streak = 0

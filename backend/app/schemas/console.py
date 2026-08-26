@@ -50,11 +50,13 @@ class BusinessSensitiveScannerConfig(BaseModel):
 class ConsoleScannersResponse(BaseModel):
     scanners: list[ScannerStatus]
     enabled_scanners: list[str]
+    strict_mode: bool
     business_sensitive_config: BusinessSensitiveScannerConfig | None = None
 
 
 class ConsoleScannersUpdateRequest(BaseModel):
     enabled_scanners: list[str]
+    strict_mode: bool | None = None
 
 
 class BusinessSensitiveScannerConfigUpdateRequest(BaseModel):
@@ -207,3 +209,24 @@ class ManagementDashboardResponse(BaseModel):
     governance: DashboardGovernanceSnapshot
     intervention_types: list[DashboardInterventionType]
     intervention_trend: list[DashboardInterventionTrendSeries]
+
+
+class ScannerPerformanceMetric(BaseModel):
+    scanner: str
+    requests: int
+    errors: int
+    timeouts: int
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+    max_ms: float
+
+
+class ScannerPerformanceResponse(BaseModel):
+    window_hours: int
+    total_scans: int
+    degraded_scans: int
+    scan_p50_ms: float
+    scan_p95_ms: float
+    scan_p99_ms: float
+    scanners: list[ScannerPerformanceMetric]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib.util import find_spec
@@ -44,9 +45,16 @@ class Qwen3GuardModerationResult:
     raw_output: str = ""
 
 
-def _resolve_runtime_device() -> str | None:
+def _resolve_runtime_device(preference: str = "auto") -> str | None:
     if torch is None:
         return None
+    normalized = (preference or "auto").strip().lower()
+    if normalized == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("Qwen3Guard requires CUDA but torch.cuda.is_available() is false.")
+        return "cuda"
+    if normalized == "cpu":
+        return "cpu"
     if torch.cuda.is_available():
         return "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
@@ -73,7 +81,7 @@ def _resolve_input_device(model) -> str | None:
 
 
 @lru_cache(maxsize=2)
-def _load_qwen3guard_artifacts(model_reference: str):
+def _load_qwen3guard_artifacts(model_reference: str, device_preference: str = "auto"):
     tokenizer = AutoTokenizer.from_pretrained(
         model_reference,
         local_files_only=True,
@@ -84,7 +92,7 @@ def _load_qwen3guard_artifacts(model_reference: str):
         "trust_remote_code": True,
         "torch_dtype": "auto",
     }
-    runtime_device = _resolve_runtime_device()
+    runtime_device = _resolve_runtime_device(device_preference)
     use_auto_device_map = find_spec("accelerate") is not None and runtime_device == "cuda"
     if use_auto_device_map:
         model_kwargs["device_map"] = "auto"
@@ -99,6 +107,8 @@ def _load_qwen3guard_artifacts(model_reference: str):
         model.tie_weights()
     if "device_map" not in model_kwargs and runtime_device is not None:
         model = model.to(runtime_device)
+    if hasattr(model, "eval"):
+        model.eval()
     return tokenizer, model
 
 
@@ -108,6 +118,7 @@ class Qwen3GuardScanner:
         self.enabled = settings.qwen3guard_enabled
         self.model_name = settings.qwen3guard_model
         self.model_path = settings.qwen3guard_model_path.strip()
+        self.device = settings.qwen3guard_device
         self.max_new_tokens = settings.qwen3guard_max_new_tokens
         self.local_model_cache_dir = configure_local_model_cache()
         self.model_reference = self._ensure_model_reference()
@@ -117,24 +128,28 @@ class Qwen3GuardScanner:
             raise RuntimeError("Qwen3Guard scanner is disabled.")
         if AutoTokenizer is None or AutoModelForCausalLM is None:
             raise RuntimeError("transformers is unavailable for Qwen3Guard scanner.")
-        _load_qwen3guard_artifacts(self.model_reference)
+        _load_qwen3guard_artifacts(self.model_reference, self.device)
+        self.scan_prompt("This is a scanner warmup check.")
 
     def scan_prompt(self, text: str) -> Qwen3GuardModerationResult:
         candidate = (text or "").strip()
         if not candidate or not self.enabled:
             return Qwen3GuardModerationResult()
 
-        tokenizer, model = _load_qwen3guard_artifacts(self.model_reference)
+        tokenizer, model = _load_qwen3guard_artifacts(self.model_reference, self.device)
         messages = [{"role": "user", "content": candidate}]
         rendered = tokenizer.apply_chat_template(messages, tokenize=False)
         input_device = _resolve_input_device(model)
         model_inputs = tokenizer([rendered], return_tensors="pt")
         if input_device is not None:
             model_inputs = model_inputs.to(input_device)
-        generated_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=self.max_new_tokens,
-        )
+        inference_context = torch.inference_mode() if torch is not None else nullcontext()
+        with inference_context:
+            generated_ids = model.generate(
+                **model_inputs,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=False,
+            )
         output_ids = generated_ids[0][len(model_inputs.input_ids[0]) :].tolist()
         raw_output = tokenizer.decode(output_ids, skip_special_tokens=True)
         safety_label, categories = self._parse_output(raw_output)
@@ -143,6 +158,11 @@ class Qwen3GuardScanner:
             categories=categories,
             raw_output=raw_output,
         )
+
+    @property
+    def runtime_device(self) -> str | None:
+        _, model = _load_qwen3guard_artifacts(self.model_reference, self.device)
+        return _resolve_input_device(model)
 
     def _ensure_model_reference(self) -> str:
         resolved_reference = self._resolve_existing_model_reference()

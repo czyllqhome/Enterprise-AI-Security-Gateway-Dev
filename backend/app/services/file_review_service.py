@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from io import BytesIO
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
@@ -95,10 +98,11 @@ class FileReviewService:
         )
         return self.get_storage_settings()
 
-    def list_files(self, *, current_user: User) -> UploadedFileListResponse:
+    def list_files(self, *, current_user: User, limit: int = 100, offset: int = 0) -> UploadedFileListResponse:
         stmt = select(UploadedFile).order_by(UploadedFile.created_at.desc(), UploadedFile.id.desc())
         if not self._is_admin(current_user):
             stmt = stmt.where(UploadedFile.uploaded_by == current_user.username)
+        stmt = stmt.offset(max(offset, 0)).limit(min(max(limit, 1), 500))
         records = self.db.scalars(stmt).all()
         return UploadedFileListResponse(files=[self._to_response(item) for item in records])
 
@@ -109,18 +113,27 @@ class FileReviewService:
         return self._to_response(record)
 
     def create_uploaded_file(self, file: UploadedFilePayload, *, username: str | None = None) -> UploadedFileResponse:
-        original_filename = file.filename or "upload"
+        return self.create_uploaded_file_from_stream(
+            filename=file.filename,
+            stream=BytesIO(file.content),
+            content_type=file.content_type,
+            username=username,
+        )
+
+    def create_uploaded_file_from_stream(
+        self,
+        *,
+        filename: str,
+        stream: BinaryIO,
+        content_type: str = "application/octet-stream",
+        username: str | None = None,
+    ) -> UploadedFileResponse:
+        original_filename = filename or "upload"
         extension = Path(original_filename).suffix.lower()
         if extension not in self.ALLOWED_EXTENSIONS:
             raise FileReviewValidationError(f"Unsupported file type: {extension or 'unknown'}")
 
-        content = file.content
         max_bytes = self.settings.file_review_max_upload_mb * 1024 * 1024
-        if len(content) > max_bytes:
-            raise FileReviewValidationError(
-                f"File exceeds the {self.settings.file_review_max_upload_mb}MB limit."
-            )
-
         storage_root = self.setting_service.get_file_review_storage_path()
         storage = FileStorageService(storage_root)
         upload_username = (username or "").strip() or "Guest"
@@ -129,29 +142,89 @@ class FileReviewService:
             username=upload_username,
             use_user_directory=self.setting_service.get_file_review_per_user_subdirectories(),
         )
-        target_path.write_bytes(content)
+        size_bytes = 0
+        try:
+            with target_path.open("wb") as target:
+                while chunk := stream.read(1024 * 1024):
+                    size_bytes += len(chunk)
+                    if size_bytes > max_bytes:
+                        raise FileReviewValidationError(
+                            f"File exceeds the {self.settings.file_review_max_upload_mb}MB limit."
+                        )
+                    target.write(chunk)
+        except Exception:
+            target_path.unlink(missing_ok=True)
+            raise
 
         record = UploadedFile(
             original_filename=original_filename,
             stored_filename=target_path.name,
             file_type=self._detect_file_type(extension),
-            content_type=file.content_type or "application/octet-stream",
+            content_type=content_type or "application/octet-stream",
             extension=extension,
-            size_bytes=len(content),
+            size_bytes=size_bytes,
             storage_path=str(target_path),
             uploaded_by=upload_username,
-            status="processing",
+            status="queued",
+            next_attempt_at=datetime.now(UTC),
         )
         self.db.add(record)
         self.db.commit()
         self.db.refresh(record)
         return self._to_response(record)
 
-    def process_uploaded_file(self, file_id: int) -> None:
+    @classmethod
+    def claim_next_job(cls, worker_id: str | None = None) -> tuple[int, str] | None:
+        resolved_worker_id = worker_id or f"file-review-{uuid4().hex[:12]}"
         db = SessionLocal()
-        record = None
         try:
-            record = db.scalar(select(UploadedFile).where(UploadedFile.id == file_id))
+            settings = get_settings()
+            now = datetime.now(UTC)
+            eligible = or_(
+                and_(
+                    UploadedFile.status == "queued",
+                    or_(UploadedFile.next_attempt_at.is_(None), UploadedFile.next_attempt_at <= now),
+                ),
+                and_(
+                    UploadedFile.status == "processing",
+                    UploadedFile.lease_expires_at.is_not(None),
+                    UploadedFile.lease_expires_at <= now,
+                ),
+            )
+            stmt = (
+                select(UploadedFile)
+                .where(eligible)
+                .order_by(UploadedFile.next_attempt_at.asc().nullsfirst(), UploadedFile.created_at.asc())
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+            record = db.scalar(stmt)
+            if record is None:
+                db.rollback()
+                return None
+            record.status = "processing"
+            record.attempt_count = (record.attempt_count or 0) + 1
+            record.lease_owner = resolved_worker_id
+            record.lease_expires_at = now + timedelta(seconds=max(settings.file_review_job_lease_seconds, 60))
+            record.processing_started_at = now
+            record.error_message = None
+            file_id = record.id
+            db.commit()
+            return file_id, resolved_worker_id
+        finally:
+            db.close()
+
+    @classmethod
+    def process_claimed_job(cls, file_id: int, worker_id: str) -> None:
+        db = SessionLocal()
+        try:
+            record = db.scalar(
+                select(UploadedFile).where(
+                    UploadedFile.id == file_id,
+                    UploadedFile.status == "processing",
+                    UploadedFile.lease_owner == worker_id,
+                )
+            )
             if record is None:
                 return
 
@@ -165,16 +238,27 @@ class FileReviewService:
             record.extracted_segments_json = [segment.model_dump() for segment in extracted.segments]
             record.review_result_json = review.model_dump(mode="json")
             record.error_message = None
-        except UnsupportedFileTypeError as exc:
-            if record is not None:
-                record.status = "failed"
-                record.error_message = str(exc)
-        except Exception as exc:
-            if record is not None:
-                record.status = "failed"
-                record.error_message = str(exc)
-        finally:
+            record.completed_at = datetime.now(UTC)
+            record.lease_owner = None
+            record.lease_expires_at = None
             db.commit()
+        except Exception as exc:
+            db.rollback()
+            record = db.scalar(select(UploadedFile).where(UploadedFile.id == file_id))
+            if record is not None and record.lease_owner == worker_id:
+                settings = get_settings()
+                record.error_message = str(exc)[:4000]
+                record.lease_owner = None
+                record.lease_expires_at = None
+                if isinstance(exc, UnsupportedFileTypeError) or record.attempt_count >= settings.file_review_job_max_attempts:
+                    record.status = "failed"
+                    record.completed_at = datetime.now(UTC)
+                else:
+                    delay_seconds = min(60 * (2 ** max(record.attempt_count - 1, 0)), 600)
+                    record.status = "queued"
+                    record.next_attempt_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
+                db.commit()
+        finally:
             db.close()
 
     def _to_response(self, record: UploadedFile) -> UploadedFileResponse:
@@ -195,6 +279,10 @@ class FileReviewService:
             storage_path=record.storage_path,
             uploaded_by=record.uploaded_by,
             status=record.status,
+            attempt_count=record.attempt_count,
+            next_attempt_at=record.next_attempt_at,
+            processing_started_at=record.processing_started_at,
+            completed_at=record.completed_at,
             extraction_summary=record.extraction_summary,
             extracted_text=record.extracted_text,
             extracted_segments=segments,

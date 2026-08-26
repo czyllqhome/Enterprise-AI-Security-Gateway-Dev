@@ -63,4 +63,58 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   return payload as T;
 }
 
+export async function apiStream<T>(
+  path: string,
+  options: RequestInit,
+  onEvent: (event: T) => void | Promise<void>,
+): Promise<void> {
+  const token = getStoredToken();
+  const headers = new Headers(options.headers);
+  if (!headers.has("Content-Type") && options.body && !(options.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
+  headers.set("Accept", "application/x-ndjson");
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+  } catch {
+    throw new ApiConnectionError();
+  }
+
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+    const detail = typeof payload === "object" && payload && "detail" in payload ? String(payload.detail) : String(payload);
+    throw new ApiError(response.status, detail || "Request failed.");
+  }
+  if (!response.body) {
+    throw new ApiConnectionError();
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.trim()) {
+        await onEvent(JSON.parse(line) as T);
+      }
+    }
+    if (done) {
+      break;
+    }
+  }
+  if (buffer.trim()) {
+    await onEvent(JSON.parse(buffer) as T);
+  }
+}
+
 export const apiBaseUrl = API_BASE_URL;

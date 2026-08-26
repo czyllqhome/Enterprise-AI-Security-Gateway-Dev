@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .guardrail import GuardrailEntity
 from ..services.guardrails.business_sensitive_scanner import BusinessSensitiveResult
@@ -44,6 +44,10 @@ class ChatPreviewResponse(BaseModel):
     enabled_scanners: list[str]
     entity_types: list[str]
     business_sensitive_result: BusinessSensitiveResult
+    scan_proof: str | None = None
+    proof_expires_at: datetime | None = None
+    degraded_scanners: list[str] = Field(default_factory=list)
+    scan_duration_ms: float = 0.0
 
 
 class ChatConfirmRequest(BaseModel):
@@ -54,6 +58,8 @@ class ChatConfirmRequest(BaseModel):
     username: str | None = None
     scan_event_id: int | None = None
     enabled_scanners: list[str] | None = None
+    scan_proof: str | None = None
+    detected_entities: list[GuardrailEntity] = Field(default_factory=list)
 
 
 class AssistantReplyResponse(BaseModel):

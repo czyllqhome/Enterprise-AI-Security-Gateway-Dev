@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -37,6 +39,9 @@ class ScanEventService:
             entity_types_json=scan.entity_types,
             detected_entities_json=[self._safe_entity_dump(entity) for entity in scan.entities],
             business_sensitive_result_json=scan.business_sensitive_result.model_dump(),
+            scan_duration_ms=scan.scan_duration_ms,
+            scanner_timings_json=scan.scanner_timings,
+            degraded_scanners_json=scan.degraded_scanners or None,
         )
         self.db.add(event)
         self.db.flush()
@@ -50,6 +55,31 @@ class ScanEventService:
     def get_event(self, event_id: int) -> ScanEvent | None:
         return self.db.scalar(select(ScanEvent).where(ScanEvent.id == event_id))
 
+    def get_event_for_confirmation(
+        self,
+        event_id: int,
+        *,
+        session_id: int,
+        username: str,
+        lock: bool = False,
+    ) -> ScanEvent | None:
+        stmt = select(ScanEvent).where(
+            ScanEvent.id == event_id,
+            ScanEvent.session_id == session_id,
+            ScanEvent.username == username,
+        )
+        if lock:
+            stmt = stmt.with_for_update()
+        return self.db.scalar(stmt)
+
+    def claim_for_confirmation(self, event: ScanEvent) -> ScanEvent:
+        if event.consumed_at is not None or event.status not in {"clean", "needs_confirmation"}:
+            raise ValueError("Scan event has already been consumed or is not confirmable.")
+        event.consumed_at = datetime.now(UTC)
+        event.status = "sending"
+        self.db.flush()
+        return event
+
     def mark_confirmed(self, event: ScanEvent, *, assistant_raw_output: str, assistant_display_output: str) -> ScanEvent:
         event.status = "confirmed_sent"
         event.blocked_reason = None
@@ -60,6 +90,12 @@ class ScanEventService:
 
     def mark_rejected(self, event: ScanEvent, reason: str) -> ScanEvent:
         event.status = "rejected"
+        event.blocked_reason = reason
+        self.db.flush()
+        return event
+
+    def mark_send_failed(self, event: ScanEvent, reason: str) -> ScanEvent:
+        event.status = "send_failed"
         event.blocked_reason = reason
         self.db.flush()
         return event

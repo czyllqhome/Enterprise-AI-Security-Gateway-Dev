@@ -28,6 +28,11 @@ class LogService:
         self.db.flush()
         return log
 
-    def list_logs(self) -> list[ChatLog]:
-        stmt = select(ChatLog).order_by(desc(ChatLog.created_at), desc(ChatLog.id))
+    def list_logs(self, *, limit: int = 100, offset: int = 0) -> list[ChatLog]:
+        stmt = (
+            select(ChatLog)
+            .order_by(desc(ChatLog.created_at), desc(ChatLog.id))
+            .offset(max(offset, 0))
+            .limit(min(max(limit, 1), 500))
+        )
         return list(self.db.scalars(stmt).all())

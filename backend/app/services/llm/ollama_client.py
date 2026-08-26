@@ -50,6 +50,40 @@ class OllamaClient(BaseLLMClient):
             return content
         raise LLMProviderError(f"{self.provider_label} response did not contain text output.")
 
+    def stream_chat(self, messages: list[dict], model: str):
+        payload = json.dumps(
+            {
+                "model": model,
+                "messages": self._without_thinking_mode(messages),
+                "stream": True,
+                "think": False,
+            },
+        ).encode("utf-8")
+        req = request.Request(
+            url=f"{self.base_url}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=120) as response:
+                for raw_line in response:
+                    if not raw_line.strip():
+                        continue
+                    data = json.loads(raw_line.decode("utf-8"))
+                    content = str((data.get("message") or {}).get("content") or "")
+                    if content:
+                        yield content
+        except error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise LLMProviderError(f"{self.provider_label} rejected the request: {detail or exc.reason}") from exc
+        except error.URLError as exc:
+            raise LLMProviderError(
+                f"{self.provider_label} connection failed. Check whether Ollama is running and the saved base URL is correct."
+            ) from exc
+        except Exception as exc:
+            raise LLMProviderError(f"Unexpected {self.provider_label} client failure: {exc}") from exc
+
     def _without_thinking_mode(self, messages: list[dict]) -> list[dict]:
         instruction = (
             "/no_think\n"

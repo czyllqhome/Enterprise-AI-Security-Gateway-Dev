@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field, ValidationError
@@ -52,6 +53,8 @@ class FileReviewScanner:
             else settings.file_review_model
         )
         self.timeout_seconds = settings.file_review_timeout_seconds
+        self.chunk_workers = max(settings.file_review_chunk_workers, 1)
+        self.max_chunks = max(settings.file_review_max_chunks, 1)
         if self.provider == "bedrock":
             self.client = BedrockBusinessSensitiveClient(
                 region_name=settings.bedrock_region,
@@ -83,8 +86,18 @@ class FileReviewScanner:
         summaries: list[str] = []
         categories: set[str] = set()
 
-        for segment in self._build_review_chunks(segments)[:80]:
-            chunk_result = self._review_segment(segment["location"], segment["text"])
+        review_chunks = self._build_review_chunks(segments)[: self.max_chunks]
+        reviewed_chunks: list[tuple[int, dict[str, str], FileReviewChunkResult]] = []
+        with ThreadPoolExecutor(max_workers=min(self.chunk_workers, len(review_chunks))) as executor:
+            futures = {
+                executor.submit(self._review_segment, segment["location"], segment["text"]): (index, segment)
+                for index, segment in enumerate(review_chunks)
+            }
+            for future in as_completed(futures):
+                index, segment = futures[future]
+                reviewed_chunks.append((index, segment, future.result()))
+
+        for _, segment, chunk_result in sorted(reviewed_chunks, key=lambda item: item[0]):
             if chunk_result.summary and chunk_result.summary != "No business-sensitive content detected.":
                 summaries.append(f"{segment['location']}: {chunk_result.summary}")
             segment_hits: list[FileReviewHit] = []

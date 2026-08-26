@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 from typing import Any
 
@@ -8,6 +8,14 @@ from sqlalchemy.orm import Session
 from ..models.chat_message import ChatMessage
 from ..models.uploaded_file import UploadedFile
 from ..models.user import User
+from ..core.config import get_settings
+from ..core.scan_proof import (
+    ScanProofError,
+    canonical_json_digest,
+    create_scan_proof,
+    decode_scan_proof,
+)
+from ..schemas.guardrail import GuardrailEntity
 from ..schemas.messages import AssistantReplyResponse, ChatConfirmRequest, ChatPreviewRequest, ChatPreviewResponse
 from .guardrails.llm_guard_service import get_guardrail_service
 from .llm.openai_client import LLMProviderError
@@ -22,6 +30,10 @@ class GuardrailViolationError(Exception):
     pass
 
 
+class ScanConfirmationError(GuardrailViolationError):
+    pass
+
+
 class ChatService:
     MAX_ATTACHMENT_TEXT_CHARS = 12000
     SYSTEM_PLACEHOLDER_INSTRUCTION = (
@@ -33,6 +45,7 @@ class ChatService:
 
     def __init__(self, db: Session):
         self.db = db
+        self.settings = get_settings()
         self.session_service = SessionService(db)
         self.guardrail_service = get_guardrail_service()
         self.log_service = LogService(db)
@@ -52,13 +65,38 @@ class ChatService:
 
     def preview_message(self, payload: ChatPreviewRequest, username: str) -> ChatPreviewResponse:
         session = self.session_service.get_session(payload.session_id, username=username)
+        session_id = session.id
+        session_provider = session.provider
+        session_model = session.model
         enabled_scanners = self.setting_service.get_enabled_scanners()
+        strict_mode = self.setting_service.get_scanner_strict_mode()
         message = self._build_message_with_attachment_context(
             payload.message,
             attachment_file_id=payload.attachment_file_id,
             username=username,
         )
-        scan = self.guardrail_service.scan_text(message, enabled_scanners=enabled_scanners, db=self.db)
+        business_runtime = None
+        business_runtime_unavailable = False
+        if "business_sensitive" in enabled_scanners:
+            try:
+                business_runtime = self.guardrail_service.resolve_business_sensitive_runtime(self.db)
+            except Exception:
+                business_runtime_unavailable = True
+        scanner_config_hash = self.guardrail_service.get_config_fingerprint(
+            enabled_scanners,
+            business_runtime=business_runtime,
+            business_runtime_unavailable=business_runtime_unavailable,
+            strict_mode=strict_mode,
+        )
+        # Release the PostgreSQL connection while CPU/GPU/network scanners run.
+        self.db.commit()
+        scan = self.guardrail_service.scan_text(
+            message,
+            enabled_scanners=enabled_scanners,
+            business_runtime=business_runtime,
+            business_runtime_unavailable=business_runtime_unavailable,
+            strict_mode=strict_mode,
+        )
         status = (
             "blocked"
             if self._should_block_scan(scan)
@@ -68,14 +106,32 @@ class ChatService:
             else "clean"
         )
         event = self.scan_event_service.create_preview_event(
-            session_id=session.id,
+            session_id=session_id,
             username=username,
-            provider=session.provider,
-            model=session.model,
+            provider=session_provider,
+            model=session_model,
             status=status,
             blocked_reason=scan.blocked_reason,
             scan=scan,
         )
+        input_digest = self._scan_payload_digest(
+            original_message=scan.original_text,
+            sanitized_message=scan.sanitized_text,
+            detected_entities=scan.entities,
+            attachment_file_id=payload.attachment_file_id,
+            enabled_scanners=scan.enabled_scanners,
+        )
+        event.input_digest = input_digest
+        event.scanner_config_hash = scanner_config_hash
+        scan_proof, proof_expires_at = create_scan_proof(
+            event_id=event.id,
+            session_id=session_id,
+            username=username,
+            payload_digest=input_digest,
+            scanner_config_hash=scanner_config_hash,
+            attachment_file_id=payload.attachment_file_id,
+        )
+        event.proof_expires_at = datetime.fromtimestamp(proof_expires_at, UTC)
         if self._should_block_scan(scan):
             detected_types: list[str] = []
             if scan.bancode_triggered:
@@ -95,7 +151,7 @@ class ChatService:
                     or ["BUSINESS_SENSITIVE"]
                 )
             self.log_service.create_log(
-                session_id=session.id,
+                session_id=session_id,
                 message_id=None,
                 username=username,
                 sanitized_content=scan.sanitized_text,
@@ -104,7 +160,7 @@ class ChatService:
         self.db.commit()
         return ChatPreviewResponse(
             scan_event_id=event.id,
-            session_id=session.id,
+            session_id=session_id,
             attachment_file_id=payload.attachment_file_id,
             status=status,
             blocked_reason=scan.blocked_reason,
@@ -120,80 +176,148 @@ class ChatService:
             enabled_scanners=scan.enabled_scanners,
             entity_types=scan.entity_types,
             business_sensitive_result=scan.business_sensitive_result,
+            scan_proof=scan_proof if status != "blocked" else None,
+            proof_expires_at=event.proof_expires_at if status != "blocked" else None,
+            degraded_scanners=scan.degraded_scanners,
+            scan_duration_ms=scan.scan_duration_ms,
         )
 
     def confirm_message(self, payload: ChatConfirmRequest, username: str) -> AssistantReplyResponse:
+        prepared = self._prepare_confirmation(payload, username=username)
+        try:
+            assistant_reply = prepared["llm_client"].chat(
+                prepared["llm_messages"],
+                prepared["session_model"],
+            )
+        except Exception as exc:
+            self._mark_confirmation_failed(prepared["event_id"], exc)
+            raise
+        return self._complete_confirmation(prepared, assistant_reply=assistant_reply, username=username)
+
+    def confirm_message_stream(self, payload: ChatConfirmRequest, username: str):
+        prepared = self._prepare_confirmation(payload, username=username)
+
+        def generate():
+            yield {"event": "accepted", "scan_event_id": prepared["event_id"]}
+            chunks: list[str] = []
+            try:
+                for delta in prepared["llm_client"].stream_chat(
+                    prepared["llm_messages"],
+                    prepared["session_model"],
+                ):
+                    if not delta:
+                        continue
+                    chunks.append(delta)
+                    yield {"event": "delta", "text": delta}
+                assistant_reply = "".join(chunks).strip()
+                if not assistant_reply:
+                    raise LLMProviderError("Model stream did not contain text output.")
+                response = self._complete_confirmation(
+                    prepared,
+                    assistant_reply=assistant_reply,
+                    username=username,
+                )
+                yield {"event": "completed", "response": response.model_dump(mode="json")}
+            except GeneratorExit:
+                self._mark_confirmation_failed(prepared["event_id"], RuntimeError("Client cancelled stream."))
+                raise
+            except Exception as exc:
+                self._mark_confirmation_failed(prepared["event_id"], exc)
+                yield {"event": "error", "detail": str(exc), "retryable": True}
+
+        return generate()
+
+    def _prepare_confirmation(self, payload: ChatConfirmRequest, *, username: str) -> dict[str, Any]:
         session = self.session_service.get_session(payload.session_id, username=username)
-        enabled_scanners = (
-            self.setting_service.validate_enabled_scanners(payload.enabled_scanners)
-            if payload.enabled_scanners is not None
-            else self.setting_service.get_enabled_scanners()
-        )
+        session_id = session.id
+        session_title = session.title
+        session_provider = session.provider
+        session_model = session.model
+        enabled_scanners = self.setting_service.get_enabled_scanners()
+        strict_mode = self.setting_service.get_scanner_strict_mode()
         original_message = self._build_message_with_attachment_context(
             payload.original_message,
             attachment_file_id=payload.attachment_file_id,
             username=username,
         )
-        scan = self.guardrail_service.scan_text(original_message, enabled_scanners=enabled_scanners, db=self.db)
-        event = self.scan_event_service.get_event(payload.scan_event_id) if payload.scan_event_id else None
+        event = self._validate_confirmation(
+            payload,
+            username=username,
+            original_message=original_message,
+            enabled_scanners=enabled_scanners,
+            strict_mode=strict_mode,
+        )
+        detected_entities = payload.detected_entities
+        has_sensitive_data = event.has_sensitive_data
+        sanitized_message = event.sanitized_input
 
-        if self._should_block_scan(scan):
-            reason = scan.blocked_reason or "Guardrail blocked this prompt."
-            if event is not None:
-                event.status = "blocked"
-                event.blocked_reason = reason
-                self.db.commit()
-            raise GuardrailViolationError(reason)
+        llm_messages, session_entities = self._build_llm_context(session_id)
+        llm_messages.append({"role": "user", "content": sanitized_message})
+        session_entities.extend(entity.model_dump() for entity in detected_entities)
+        llm_client = get_llm_client(session_provider, db=self.db)
 
-        if scan.has_sensitive_data and payload.sanitized_message != scan.sanitized_text:
-            if event is not None:
-                self.scan_event_service.mark_rejected(event, "Sanitized message mismatch.")
-                self.db.commit()
-            raise GuardrailViolationError("Sanitized message does not match the approved guardrail output.")
-        if not scan.has_sensitive_data and payload.sanitized_message != payload.original_message:
-            if event is not None:
-                self.scan_event_service.mark_rejected(event, "Unexpected sanitized payload for clean message.")
-                self.db.commit()
-            raise GuardrailViolationError("Sanitized message must match the original message when no sensitive data is found.")
+        self.scan_event_service.claim_for_confirmation(event)
+        self.db.commit()
+        return {
+            "event_id": event.id,
+            "session_id": session_id,
+            "session_title": session_title,
+            "session_model": session_model,
+            "original_message": original_message,
+            "sanitized_message": sanitized_message,
+            "detected_entities": detected_entities,
+            "has_sensitive_data": has_sensitive_data,
+            "llm_messages": llm_messages,
+            "session_entities": session_entities,
+            "llm_client": llm_client,
+        }
+
+    def _mark_confirmation_failed(self, event_id: int, exc: Exception) -> None:
+        failed_event = self.scan_event_service.get_event(event_id)
+        if failed_event is not None:
+            self.scan_event_service.mark_send_failed(failed_event, str(exc))
+            self.db.commit()
+
+    def _complete_confirmation(
+        self,
+        prepared: dict[str, Any],
+        *,
+        assistant_reply: str,
+        username: str,
+    ) -> AssistantReplyResponse:
+        session_id = prepared["session_id"]
+        original_message = prepared["original_message"]
+        sanitized_message = prepared["sanitized_message"]
+        detected_entities = prepared["detected_entities"]
+        has_sensitive_data = prepared["has_sensitive_data"]
+        deanonymized_reply = self.guardrail_service.deanonymize_text(
+            assistant_reply,
+            prepared["session_entities"],
+        )
 
         user_message = ChatMessage(
-            session_id=session.id,
+            session_id=session_id,
             role="user",
-            original_content=scan.original_text,
-            sanitized_content=scan.sanitized_text,
-            used_content=scan.sanitized_text,
-            has_sensitive_data=scan.has_sensitive_data,
-            sensitive_entities_json=[entity.model_dump() for entity in scan.entities] or None,
+            original_content=original_message,
+            sanitized_content=sanitized_message,
+            used_content=sanitized_message,
+            has_sensitive_data=has_sensitive_data,
+            sensitive_entities_json=[entity.model_dump() for entity in detected_entities] or None,
         )
         self.db.add(user_message)
         self.db.flush()
 
-        if scan.has_sensitive_data:
+        if has_sensitive_data:
             self.log_service.create_log(
-                session_id=session.id,
+                session_id=session_id,
                 message_id=user_message.id,
                 username=username,
-                sanitized_content=scan.sanitized_text,
-                detected_entity_types=[entity.type for entity in scan.entities],
-            )
-
-        llm_messages = self._build_llm_messages(session.id)
-        assistant_reply = get_llm_client(session.provider, db=self.db).chat(llm_messages, session.model)
-        deanonymized_reply = self._deanonymize_assistant_reply(session.id, assistant_reply)
-
-        if event is None:
-            event = self.scan_event_service.create_preview_event(
-                session_id=session.id,
-                username=username,
-                provider=session.provider,
-                model=session.model,
-                status="clean" if not scan.has_sensitive_data else "needs_confirmation",
-                blocked_reason=None,
-                scan=scan,
+                sanitized_content=sanitized_message,
+                detected_entity_types=[entity.type for entity in detected_entities],
             )
 
         assistant_message = ChatMessage(
-            session_id=session.id,
+            session_id=session_id,
             role="assistant",
             original_content=assistant_reply,
             sanitized_content=deanonymized_reply,
@@ -202,23 +326,105 @@ class ChatService:
             sensitive_entities_json=None,
         )
         self.db.add(assistant_message)
+        event = self.scan_event_service.get_event(prepared["event_id"])
+        if event is None:
+            raise ScanConfirmationError("Scan event disappeared before confirmation completed.")
         self.scan_event_service.mark_confirmed(
             event,
             assistant_raw_output=assistant_reply,
             assistant_display_output=deanonymized_reply,
         )
         event.username = username
-        session.updated_at = datetime.utcnow()
+        session = self.session_service.get_session(session_id, username=username)
+        session.updated_at = datetime.now(UTC)
         self.db.commit()
         self.db.refresh(user_message)
         self.db.refresh(assistant_message)
         self.db.refresh(session)
 
         return AssistantReplyResponse(
-            session_id=session.id,
-            session_title=session.title,
+            session_id=session_id,
+            session_title=prepared["session_title"],
             user_message=user_message,
             assistant_message=assistant_message,
+        )
+
+    def _validate_confirmation(
+        self,
+        payload: ChatConfirmRequest,
+        *,
+        username: str,
+        original_message: str,
+        enabled_scanners: list[str],
+        strict_mode: bool,
+    ):
+        if payload.scan_event_id is None or not payload.scan_proof:
+            raise ScanConfirmationError("A valid scan proof is required. Please scan the message again.")
+        event = self.scan_event_service.get_event_for_confirmation(
+            payload.scan_event_id,
+            session_id=payload.session_id,
+            username=username,
+            lock=True,
+        )
+        if event is None:
+            raise ScanConfirmationError("Scan event was not found for this user and session.")
+        if event.status not in {"clean", "needs_confirmation"} or event.consumed_at is not None:
+            raise ScanConfirmationError("Scan event has already been consumed or cannot be confirmed.")
+
+        scanner_config_hash = self.guardrail_service.get_config_fingerprint(
+            enabled_scanners,
+            db=self.db,
+            strict_mode=strict_mode,
+        )
+        input_digest = self._scan_payload_digest(
+            original_message=original_message,
+            sanitized_message=payload.sanitized_message,
+            detected_entities=payload.detected_entities,
+            attachment_file_id=payload.attachment_file_id,
+            enabled_scanners=enabled_scanners,
+        )
+        try:
+            claims = decode_scan_proof(payload.scan_proof)
+        except ScanProofError as exc:
+            raise ScanConfirmationError(str(exc)) from exc
+
+        expected_claims = {
+            "event_id": payload.scan_event_id,
+            "session_id": payload.session_id,
+            "username": username,
+            "payload_digest": input_digest,
+            "scanner_config_hash": scanner_config_hash,
+            "attachment_file_id": payload.attachment_file_id,
+        }
+        if any(claims.get(key) != value for key, value in expected_claims.items()):
+            raise ScanConfirmationError("Scan proof does not match the approved message. Please scan again.")
+        if event.input_digest != input_digest or event.scanner_config_hash != scanner_config_hash:
+            raise ScanConfirmationError("Scanner configuration or message content changed. Please scan again.")
+        if payload.sanitized_message != event.sanitized_input:
+            raise ScanConfirmationError("Sanitized message does not match the approved guardrail output.")
+        if event.has_sensitive_data != bool(payload.detected_entities):
+            raise ScanConfirmationError("Detected entity mapping does not match the approved scan.")
+        if not event.has_sensitive_data and payload.sanitized_message != original_message:
+            raise ScanConfirmationError("A clean message must be sent without modification.")
+        return event
+
+    def _scan_payload_digest(
+        self,
+        *,
+        original_message: str,
+        sanitized_message: str,
+        detected_entities: list[GuardrailEntity],
+        attachment_file_id: int | None,
+        enabled_scanners: list[str],
+    ) -> str:
+        return canonical_json_digest(
+            {
+                "original_message": original_message,
+                "sanitized_message": sanitized_message,
+                "detected_entities": [entity.model_dump(mode="json") for entity in detected_entities],
+                "attachment_file_id": attachment_file_id,
+                "enabled_scanners": enabled_scanners,
+            },
         )
 
     def _build_message_with_attachment_context(
@@ -280,44 +486,58 @@ class ChatService:
             return None
 
     def _build_llm_messages(self, session_id: int) -> list[dict[str, str]]:
+        messages, _ = self._build_llm_context(session_id)
+        return messages
+
+    def _build_llm_context(self, session_id: int) -> tuple[list[dict[str, str]], list[dict]]:
+        settings = getattr(self, "settings", get_settings())
         stmt = (
             select(ChatMessage)
             .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at, ChatMessage.id)
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+            .limit(max(settings.chat_context_max_messages, 1))
         )
-        messages = self.db.scalars(stmt).all()
+        newest_first = list(self.db.scalars(stmt).all())
+        remaining_tokens = max(
+            settings.chat_context_token_budget - self._estimate_tokens(self.SYSTEM_PLACEHOLDER_INSTRUCTION),
+            1,
+        )
+        selected_newest_first: list[ChatMessage] = []
+        for message in newest_first:
+            cost = self._estimate_tokens(message.used_content or "")
+            if selected_newest_first and cost > remaining_tokens:
+                break
+            selected_newest_first.append(message)
+            remaining_tokens = max(remaining_tokens - cost, 0)
+        messages = list(reversed(selected_newest_first))
         llm_messages = [
             {"role": "system", "content": self.SYSTEM_PLACEHOLDER_INSTRUCTION},
         ]
-        llm_messages.extend(
-            [
-                {"role": message.role, "content": message.used_content or ""}
-                for message in messages
-                if message.used_content
-            ]
-        )
-        return llm_messages
-
-    def _deanonymize_assistant_reply(self, session_id: int, assistant_reply: str) -> str:
-        session_entities = self._collect_session_entities(session_id)
-        return self.guardrail_service.deanonymize_text(assistant_reply, session_entities)
-
-    def _collect_session_entities(self, session_id: int) -> list[dict]:
-        stmt = (
-            select(ChatMessage)
-            .where(ChatMessage.session_id == session_id, ChatMessage.role == "user")
-            .order_by(ChatMessage.created_at, ChatMessage.id)
-        )
-        messages = self.db.scalars(stmt).all()
         entities: list[dict] = []
         seen_placeholders: set[str] = set()
-
         for message in messages:
+            if message.used_content:
+                llm_messages.append({"role": message.role, "content": message.used_content})
+            if message.role != "user":
+                continue
             for entity in message.sensitive_entities_json or []:
                 replacement = entity.get("replacement")
                 if not replacement or replacement in seen_placeholders:
                     continue
                 seen_placeholders.add(replacement)
                 entities.append(entity)
+        return llm_messages, entities
 
+    def _estimate_tokens(self, text: str) -> int:
+        # Deliberately local and allocation-light: this is a conservative context
+        # bound, not billing. UTF-8 bytes/3 tracks Chinese and mixed prompts better
+        # than a character-only estimate without triggering tokenizer downloads.
+        return max((len((text or "").encode("utf-8")) + 2) // 3, 1)
+
+    def _deanonymize_assistant_reply(self, session_id: int, assistant_reply: str) -> str:
+        session_entities = self._collect_session_entities(session_id)
+        return self.guardrail_service.deanonymize_text(assistant_reply, session_entities)
+
+    def _collect_session_entities(self, session_id: int) -> list[dict]:
+        _, entities = self._build_llm_context(session_id)
         return entities

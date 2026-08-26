@@ -19,6 +19,8 @@ from .core.db import Base, SessionLocal, configure_database
 from .core.logging import configure_logging
 from .models import ChatLog, ChatMessage, ChatSession, ProviderCredential, ScanEvent, SystemSetting, UploadedFile, User  # noqa: F401
 from .services.auth_service import ensure_default_admin
+from .services.guardrails.llm_guard_service import get_guardrail_service
+from .workers.file_review_worker import FileReviewWorker
 
 
 def ensure_schema_compatibility(engine) -> None:
@@ -55,11 +57,22 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility(engine)
     db = SessionLocal()
+    file_review_worker: FileReviewWorker | None = None
     try:
         ensure_default_admin(db)
+        # Model loading and real scanner warmups happen before readiness can pass,
+        # so the first user request never pays the cold-start cost.
+        get_guardrail_service()
+        if get_settings().file_review_worker_mode.strip().lower() == "embedded":
+            file_review_worker = FileReviewWorker()
+            file_review_worker.start()
     finally:
         db.close()
-    yield
+    try:
+        yield
+    finally:
+        if file_review_worker is not None:
+            file_review_worker.stop()
 
 
 app = FastAPI(title="Enterprise AI Security Gateway API", lifespan=lifespan)

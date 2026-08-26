@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -164,6 +165,42 @@ def test_uploaded_file_is_stored_under_username_directory(client, db_session, tm
     stored_path = Path(created.storage_path)
     assert stored_path.parent == tmp_path.resolve() / "alice"
     assert stored_path.exists()
+    assert created.status == "queued"
+
+
+def test_durable_file_review_job_can_be_reclaimed_after_lease_expiry(db_session, monkeypatch):
+    testing_session_local = sessionmaker(autoflush=False, autocommit=False, bind=db_session.get_bind())
+    monkeypatch.setattr("app.services.file_review_service.SessionLocal", testing_session_local)
+    record = UploadedFile(
+        original_filename="queued.pdf",
+        stored_filename="queued.pdf",
+        file_type="pdf",
+        content_type="application/pdf",
+        extension=".pdf",
+        size_bytes=10,
+        storage_path="/tmp/queued.pdf",
+        uploaded_by="alice",
+        status="queued",
+        next_attempt_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    db_session.add(record)
+    db_session.commit()
+
+    first_claim = FileReviewService.claim_next_job("worker-a")
+    assert first_claim == (record.id, "worker-a")
+    db_session.expire_all()
+    claimed = db_session.get(UploadedFile, record.id)
+    assert claimed is not None and claimed.status == "processing"
+    assert claimed.attempt_count == 1
+
+    claimed.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db_session.commit()
+    second_claim = FileReviewService.claim_next_job("worker-b")
+    assert second_claim == (record.id, "worker-b")
+    db_session.expire_all()
+    reclaimed = db_session.get(UploadedFile, record.id)
+    assert reclaimed is not None and reclaimed.attempt_count == 2
+    assert reclaimed.lease_owner == "worker-b"
 
 
 def test_chat_attachment_context_uses_extracted_file_text(db_session):

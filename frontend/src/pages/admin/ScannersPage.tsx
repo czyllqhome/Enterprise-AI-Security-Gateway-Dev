@@ -9,10 +9,12 @@ type BusinessSensitiveProvider = "ollama" | "qwen" | "bedrock";
 export function ScannersPage() {
   const [scanners, setScanners] = useState<Scanner[]>([]);
   const [enabled, setEnabled] = useState<string[]>([]);
+  const [strictMode, setStrictModeState] = useState(true);
   const [businessConfig, setBusinessConfig] = useState<BusinessSensitiveScannerConfig | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<BusinessSensitiveProvider>("ollama");
   const [selectedModel, setSelectedModel] = useState("");
   const [status, setStatus] = useState("");
+  const [updatingStrictMode, setUpdatingStrictMode] = useState(false);
 
   useEffect(() => {
     loadScanners();
@@ -25,6 +27,7 @@ export function ScannersPage() {
   function hydrateScanners(data: ConsoleScannersResponse) {
     setScanners(data.scanners);
     setEnabled(data.enabled_scanners);
+    setStrictModeState(data.strict_mode);
     if (data.business_sensitive_config) {
       setBusinessConfig(data.business_sensitive_config);
       setSelectedProvider(data.business_sensitive_config.provider);
@@ -41,10 +44,26 @@ export function ScannersPage() {
     }
     const data = await apiFetch<ConsoleScannersResponse>("/api/console/scanners", {
       method: "PUT",
-      body: JSON.stringify({ enabled_scanners: [...nextEnabled] }),
+      body: JSON.stringify({ enabled_scanners: [...nextEnabled], strict_mode: strictMode }),
     });
     hydrateScanners(data);
     setStatus("Scanner switch updated.");
+  }
+
+  async function setStrictMode(isEnabled: boolean) {
+    setUpdatingStrictMode(true);
+    try {
+      const data = await apiFetch<ConsoleScannersResponse>("/api/console/scanners", {
+        method: "PUT",
+        body: JSON.stringify({ enabled_scanners: enabled, strict_mode: isEnabled }),
+      });
+      hydrateScanners(data);
+      setStatus(`Strict mode ${isEnabled ? "enabled" : "disabled"}.`);
+    } catch (exc) {
+      setStatus(exc instanceof Error ? exc.message : "Strict mode update failed.");
+    } finally {
+      setUpdatingStrictMode(false);
+    }
   }
 
   async function saveBusinessSensitiveConfig() {
@@ -70,6 +89,30 @@ export function ScannersPage() {
   return (
     <>
       <PageTitle title="Scanners" subtitle="Manage enabled, available, and active scanner runtimes." />
+      <section className="panel scanner-runtime-panel">
+        <div className="scanner-card-head">
+          <div>
+            <h2>Scanner Failure Policy</h2>
+            <p>
+              Strict mode blocks the entire request when a required scanner errors or times out. Turn it off to keep all configured scanners enabled while allowing the remaining available scanners to continue enforcement.
+            </p>
+          </div>
+          <label className="switch" title="Toggle scanner strict mode">
+            <input
+              aria-label="Strict scanner failure mode"
+              checked={strictMode}
+              disabled={updatingStrictMode}
+              type="checkbox"
+              onChange={(event) => setStrictMode(event.target.checked)}
+            />
+            <span />
+          </label>
+        </div>
+        <div className="entity-strip">
+          <span className={strictMode ? "ok" : "warn"}>strict mode: {String(strictMode)}</span>
+          <span>{strictMode ? "fail closed" : "continue with available scanners"}</span>
+        </div>
+      </section>
       {businessConfig ? (
         <section className="panel scanner-runtime-panel">
           <div>

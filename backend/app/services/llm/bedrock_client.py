@@ -65,6 +65,32 @@ class BedrockClient(BaseLLMClient):
             return text.strip()
         raise LLMProviderError(f"{self.provider_label} response did not contain text output.")
 
+    def stream_chat(self, messages: list[dict], model: str):
+        system, converse_messages = self._to_converse_messages(messages)
+        kwargs = {
+            "modelId": model,
+            "messages": converse_messages,
+            "inferenceConfig": {"temperature": 0.2, "topP": 0.9, "maxTokens": 1024},
+        }
+        if system:
+            kwargs["system"] = system
+        try:
+            response = self.client.converse_stream(**kwargs)
+            for event in response.get("stream") or []:
+                delta = ((event.get("contentBlockDelta") or {}).get("delta") or {})
+                text = str(delta.get("text") or "")
+                if text:
+                    yield text
+        except self._client_error as exc:
+            detail = exc.response.get("Error", {}).get("Message") or str(exc)
+            raise LLMProviderError(f"{self.provider_label} rejected the request: {detail}") from exc
+        except self._boto_core_error as exc:
+            raise LLMProviderError(
+                f"{self.provider_label} connection failed. Check AWS region, credentials, and Bedrock model access."
+            ) from exc
+        except Exception as exc:
+            raise LLMProviderError(f"Unexpected {self.provider_label} client failure: {exc}") from exc
+
     def _to_converse_messages(self, messages: list[dict]) -> tuple[list[dict], list[dict]]:
         system: list[dict] = []
         converse_messages: list[dict] = []

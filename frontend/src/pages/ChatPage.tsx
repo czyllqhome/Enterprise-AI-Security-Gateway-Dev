@@ -1,7 +1,7 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, FileText, LoaderCircle, LogOut, MessageSquarePlus, Paperclip, Send, ShieldAlert, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { apiFetch } from "../api/client";
+import { apiFetch, apiStream } from "../api/client";
 import type { ChatPreview, ChatSession, ChatSessionDetail, GuardrailEntity, Provider, UploadedFile } from "../api/types";
 import { useAuth } from "../state/AuthContext";
 import { formatDateTime, messageText } from "../utils/format";
@@ -10,6 +10,12 @@ type DemoSample = {
   name: string;
   content: string;
 };
+
+type ChatStreamEvent =
+  | { event: "accepted"; scan_event_id: number }
+  | { event: "delta"; text: string }
+  | { event: "completed"; response: unknown }
+  | { event: "error"; detail: string; retryable: boolean };
 
 const entityLabels: Record<string, string> = {
   ADDRESS: "Address",
@@ -121,6 +127,7 @@ export function ChatPage() {
   const [attachmentName, setAttachmentName] = useState("");
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [streamingReply, setStreamingReply] = useState("");
 
   const currentProvider = useMemo(() => providers.find((item) => item.provider === provider), [providers, provider]);
 
@@ -129,7 +136,7 @@ export function ChatPage() {
   }, []);
 
   useEffect(() => {
-    if (!attachment || attachment.status !== "processing") {
+    if (!attachment || !["queued", "processing"].includes(attachment.status)) {
       return;
     }
     const timer = window.setTimeout(async () => {
@@ -187,6 +194,7 @@ export function ChatPage() {
       body: JSON.stringify({ title: "", provider, model }),
     });
     await loadSessions(created.id);
+    return created;
   }
 
   async function deleteSession() {
@@ -212,17 +220,23 @@ export function ChatPage() {
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const prompt = message.trim() || (attachment ? "请总结这个文件。" : "");
-    if (!selected || !prompt.trim() || !isAttachmentReadyToSend()) {
+    if (loading || !prompt.trim() || !isAttachmentReadyToSend()) {
       return;
     }
     setLoading(true);
-    setStatus("正在进行安全扫描...");
     setPreview(null);
     try {
+      let sessionId = selected?.id;
+      if (!sessionId) {
+        setStatus("正在创建新会话...");
+        const created = await createSession();
+        sessionId = created.id;
+      }
+      setStatus("正在进行安全扫描...");
       const result = await apiFetch<ChatPreview>("/api/chat/preview", {
         method: "POST",
         body: JSON.stringify({
-          session_id: selected.id,
+          session_id: sessionId,
           message: prompt.trim(),
           attachment_file_id: attachment?.id ?? null,
         }),
@@ -233,10 +247,10 @@ export function ChatPage() {
       }
       if (result.status === "needs_confirmation") {
         setPreview(result);
-        setStatus("检测到敏感内容，请确认脱敏版本。");
+        setStatus(`检测到敏感内容，请确认脱敏版本。扫描耗时 ${Math.round(result.scan_duration_ms)}ms。`);
         return;
       }
-      await confirmSend(result);
+      await confirmSend(result, sessionId);
     } catch (exc) {
       setStatus(exc instanceof Error ? exc.message : "发送失败。");
     } finally {
@@ -244,32 +258,52 @@ export function ChatPage() {
     }
   }
 
-  async function confirmSend(targetPreview: ChatPreview) {
-    if (!selected) {
+  async function confirmSend(targetPreview: ChatPreview, targetSessionId = selected?.id) {
+    if (!targetSessionId) {
       return;
     }
     setLoading(true);
     setStatus("正在等待模型回复...");
+    setStreamingReply("");
     try {
-      await apiFetch("/api/chat/confirm", {
-        method: "POST",
-        body: JSON.stringify({
-          session_id: selected.id,
-          original_message: targetPreview.original_message,
-          sanitized_message: targetPreview.sanitized_message,
-          scan_event_id: targetPreview.scan_event_id,
-          enabled_scanners: targetPreview.enabled_scanners,
-          attachment_file_id: targetPreview.attachment_file_id,
-        }),
-      });
+      let completed = false;
+      await apiStream<ChatStreamEvent>(
+        "/api/chat/confirm/stream",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: targetSessionId,
+            original_message: targetPreview.original_message,
+            sanitized_message: targetPreview.sanitized_message,
+            scan_event_id: targetPreview.scan_event_id,
+            scan_proof: targetPreview.scan_proof,
+            detected_entities: targetPreview.detected_entities,
+            attachment_file_id: targetPreview.attachment_file_id,
+          }),
+        },
+        (event) => {
+          if (event.event === "delta") {
+            setStreamingReply((current) => current + event.text);
+            setStatus("模型正在生成回复...");
+          } else if (event.event === "completed") {
+            completed = true;
+          } else if (event.event === "error") {
+            throw new Error(event.detail || "模型流式输出失败。");
+          }
+        },
+      );
+      if (!completed) {
+        throw new Error("模型连接提前结束，请重试。");
+      }
       setMessage("");
       clearAttachment();
       setPreview(null);
       setStatus("已发送。");
-      await loadSessions(selected.id);
+      await loadSessions(targetSessionId);
     } catch (exc) {
       setStatus(exc instanceof Error ? exc.message : "确认发送失败。");
     } finally {
+      setStreamingReply("");
       setLoading(false);
     }
   }
@@ -349,7 +383,7 @@ export function ChatPage() {
     if (uploadingAttachment) {
       return "上传中";
     }
-    if (!attachment || attachment.status === "processing") {
+    if (!attachment || ["queued", "processing"].includes(attachment.status)) {
       return "安全审核中";
     }
     if (attachment.status === "failed") {
@@ -379,7 +413,13 @@ export function ChatPage() {
       .slice(0, 900);
   }
 
-  const canSubmit = Boolean(selected && !loading && isAttachmentReadyToSend() && (message.trim() || attachment?.status === "completed"));
+  const canSubmit = Boolean(
+    provider
+      && model
+      && !loading
+      && isAttachmentReadyToSend()
+      && (message.trim() || attachment?.status === "completed"),
+  );
 
   return (
     <main className="app-shell">
@@ -453,6 +493,13 @@ export function ChatPage() {
               <small>{formatDateTime(item.created_at)}</small>
             </article>
           ))}
+          {streamingReply ? (
+            <article className="message assistant" aria-live="polite">
+              <span>助手</span>
+              <p>{streamingReply}</p>
+              <small>正在生成...</small>
+            </article>
+          ) : null}
           {selected && !selected.messages.length ? <p className="empty-state">输入第一条消息开始安全聊天。</p> : null}
           {!selected ? <p className="empty-state">创建会话后即可开始。</p> : null}
         </div>

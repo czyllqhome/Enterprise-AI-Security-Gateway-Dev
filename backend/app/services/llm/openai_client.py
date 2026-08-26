@@ -45,3 +45,29 @@ class OpenAIClient(BaseLLMClient):
             return response.choices[0].message.content.strip()
 
         raise LLMProviderError(f"{self.provider_label} response did not contain text output.")
+
+    def stream_chat(self, messages: list[dict], model: str):
+        try:
+            stream = self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=True,
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                content = chunk.choices[0].delta.content
+                if content:
+                    yield content
+        except AuthenticationError as exc:
+            raise LLMProviderError(f"{self.provider_label} authentication failed. Check the saved API key.") from exc
+        except BadRequestError as exc:
+            raise LLMProviderError(f"{self.provider_label} rejected the request: {exc}") from exc
+        except (APIConnectionError, APITimeoutError) as exc:
+            raise LLMProviderError(
+                f"{self.provider_label} connection failed. Check network access and the saved base URL."
+            ) from exc
+        except APIError as exc:
+            raise LLMProviderError(f"{self.provider_label} request failed: {exc}") from exc
+        except Exception as exc:
+            raise LLMProviderError(f"Unexpected {self.provider_label} client failure: {exc}") from exc

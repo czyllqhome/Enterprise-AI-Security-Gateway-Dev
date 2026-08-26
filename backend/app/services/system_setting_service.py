@@ -26,6 +26,7 @@ class SystemSettingService:
     FILE_REVIEW_LINUX_STORAGE_PATH_KEY = "file_review.linux_storage_path"
     FILE_REVIEW_PER_USER_SUBDIRECTORIES_KEY = "file_review.per_user_subdirectories"
     ENABLED_SCANNERS_KEY = "guardrail.enabled_scanners"
+    SCANNER_STRICT_MODE_KEY = "guardrail.strict_mode"
     BUSINESS_SENSITIVE_PROVIDER_KEY = "business_sensitive.provider"
     BUSINESS_SENSITIVE_MODEL_KEY = "business_sensitive.model"
 
@@ -126,6 +127,17 @@ class SystemSettingService:
         self._set(self.ENABLED_SCANNERS_KEY, json.dumps(validated))
         self.db.commit()
         return validated
+
+    def get_scanner_strict_mode(self) -> bool:
+        record = self._get(self.SCANNER_STRICT_MODE_KEY)
+        if record is None:
+            return self.settings.scanner_strict_mode
+        return record.value.strip().lower() in {"1", "true", "yes", "on"}
+
+    def set_scanner_strict_mode(self, enabled: bool) -> bool:
+        self._set(self.SCANNER_STRICT_MODE_KEY, json.dumps(enabled))
+        self.db.commit()
+        return enabled
 
     def get_business_sensitive_config(self) -> dict[str, str]:
         provider_record = self._get(self.BUSINESS_SENSITIVE_PROVIDER_KEY)

@@ -16,17 +16,116 @@ Browser
       -> FastAPI connects to PostgreSQL at 10.0.0.11:5432
 ```
 
-## 0. Preconditions
+## 0. AWS Network and Security Groups
 
-Open these firewall/security-group paths:
+Create three dedicated AWS security groups. Use security group references as the source/destination whenever the servers are in the same VPC; this is safer and easier to maintain than hard-coding private IPs. The private IPs below are included for clarity:
 
-- Client network -> `10.0.0.7:80` and, if HTTPS is enabled, `10.0.0.7:443`
-- `10.0.0.7` -> `10.0.0.9:8002`
-- `10.0.0.9` -> `10.0.0.11:5432`
-- If Ollama runs on the backend server: only local `127.0.0.1:11434` is needed
-- If Ollama runs on another server: `10.0.0.9` -> that server's `11434`
+- Frontend and Nginx EC2: `10.0.0.7`
+- Backend FastAPI EC2: `10.0.0.9`
+- PostgreSQL EC2 or RDS: `10.0.0.11`
 
-Do not expose PostgreSQL or the backend API directly to the public internet unless there is a separate network control layer.
+Security groups are stateful. You do not need to add inbound ephemeral-port rules for response traffic when the matching outbound request is allowed.
+
+### 0.1 Recommended Security Group Names
+
+Use names like:
+
+```text
+sg-ai-gateway-frontend
+sg-ai-gateway-backend
+sg-ai-gateway-db
+```
+
+If PostgreSQL is deployed as RDS, attach `sg-ai-gateway-db` to the RDS instance. If PostgreSQL is deployed on EC2, attach it to the PostgreSQL EC2 instance.
+
+### 0.2 Frontend/Nginx Security Group: `sg-ai-gateway-frontend`
+
+Attach this security group to the frontend server `10.0.0.7`.
+
+Inbound rules:
+
+| Type | Protocol | Port | Source | Required | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| HTTP | TCP | `80` | Client CIDR, for example `0.0.0.0/0` for public access or your corporate CIDR | Yes, unless HTTPS-only | Browser access to Nginx |
+| HTTPS | TCP | `443` | Client CIDR, for example `0.0.0.0/0` for public access or your corporate CIDR | Recommended | Browser access to Nginx over TLS |
+| SSH | TCP | `22` | Bastion/security admin CIDR only | Optional | Linux server administration |
+| RDP | TCP | `3389` | Bastion/security admin CIDR only | Optional, Windows only | Windows server administration |
+
+Outbound rules:
+
+| Type | Protocol | Port | Destination | Required | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| Custom TCP | TCP | `8002` | `sg-ai-gateway-backend` or `10.0.0.9/32` | Yes | Nginx proxy to FastAPI |
+| HTTPS | TCP | `443` | `0.0.0.0/0`, NAT gateway, or specific package/certificate endpoints | Optional | OS updates, `npm install`, Certbot/ACME, external monitoring |
+| HTTP | TCP | `80` | `0.0.0.0/0`, NAT gateway, or specific package/certificate endpoints | Optional | Package mirrors or HTTP-01 certificate validation |
+
+For a locked-down production environment, the only application-required outbound rule from the frontend server is `TCP 8002` to the backend security group.
+
+### 0.3 Backend/FastAPI Security Group: `sg-ai-gateway-backend`
+
+Attach this security group to the backend server `10.0.0.9`.
+
+Inbound rules:
+
+| Type | Protocol | Port | Source | Required | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| Custom TCP | TCP | `8002` | `sg-ai-gateway-frontend` or `10.0.0.7/32` | Yes | Nginx reverse proxy to FastAPI |
+| SSH | TCP | `22` | Bastion/security admin CIDR only | Optional | Linux server administration |
+| RDP | TCP | `3389` | Bastion/security admin CIDR only | Optional, Windows only | Windows server administration |
+
+Do not allow `0.0.0.0/0` inbound to port `8002`. Public users should reach the backend only through Nginx on `10.0.0.7`.
+
+Outbound rules:
+
+| Type | Protocol | Port | Destination | Required | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| PostgreSQL | TCP | `5432` | `sg-ai-gateway-db` or `10.0.0.11/32` | Yes | SQLAlchemy/PostgreSQL connection |
+| HTTPS | TCP | `443` | AWS service endpoints, VPC endpoints, NAT gateway, or `0.0.0.0/0` | Required for Bedrock/OpenAI/Qwen/OpenRouter | AWS Bedrock Runtime, STS/IMDS support paths, external model providers, dependency downloads |
+| HTTP | TCP | `80` | NAT gateway or package endpoints | Optional | Package mirrors and OS updates |
+| Custom TCP | TCP | `11434` | Ollama server SG/IP | Optional | Only needed if Ollama runs on a separate server |
+
+If Ollama runs on the backend server itself, keep `BUSINESS_SENSITIVE_OLLAMA_URL=http://127.0.0.1:11434` and `FILE_REVIEW_OLLAMA_URL=http://127.0.0.1:11434`; no security group rule is needed for local loopback traffic.
+
+If AWS Bedrock is used and the backend subnet has no NAT gateway, create VPC interface endpoints for the AWS services you use and target those endpoints in the route/security design. At minimum, the backend must be able to reach Bedrock Runtime in `BEDROCK_REGION`.
+
+### 0.4 PostgreSQL Security Group: `sg-ai-gateway-db`
+
+Attach this security group to PostgreSQL server `10.0.0.11` or to the RDS instance.
+
+Inbound rules:
+
+| Type | Protocol | Port | Source | Required | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| PostgreSQL | TCP | `5432` | `sg-ai-gateway-backend` or `10.0.0.9/32` | Yes | Backend database connection |
+| SSH | TCP | `22` | Bastion/security admin CIDR only | Optional, EC2 only | PostgreSQL EC2 administration |
+
+Do not allow `0.0.0.0/0` inbound to port `5432`. The database should never be directly reachable from client browsers or the frontend server.
+
+Outbound rules:
+
+| Type | Protocol | Port | Destination | Required | Purpose |
+| --- | --- | --- | --- | --- | --- |
+| HTTPS | TCP | `443` | NAT gateway, package repositories, or AWS service endpoints | Optional, EC2 only | OS updates, backups, monitoring agents |
+| PostgreSQL response traffic | TCP | Ephemeral | Backend client connection | No explicit rule needed | Security groups are stateful |
+
+For RDS, the default outbound rule is usually not relevant to the application path. The critical rule is inbound `5432` from `sg-ai-gateway-backend`.
+
+### 0.5 Minimum Application Path Summary
+
+The minimum required application traffic is:
+
+```text
+Client CIDR -> 10.0.0.7:80/443
+10.0.0.7 -> 10.0.0.9:8002
+10.0.0.9 -> 10.0.0.11:5432
+10.0.0.9 -> AWS Bedrock / external model provider endpoints on 443, if those providers are enabled
+```
+
+Recommended public exposure:
+
+- Public: only `10.0.0.7:80/443`
+- Private: `10.0.0.9:8002`, reachable only from `sg-ai-gateway-frontend`
+- Private: `10.0.0.11:5432`, reachable only from `sg-ai-gateway-backend`
 
 ## 1. PostgreSQL Server: 10.0.0.11
 

@@ -12,12 +12,22 @@ from ..schemas.console import (
     ConsoleSummaryResponse,
     LastScanResponse,
     ManagementDashboardResponse,
+    ScannerPerformanceResponse,
     TokenUsageMonitoringResponse,
 )
 from ..services.console_service import ConsoleService
 
 
 router = APIRouter(prefix="/api/console", tags=["console"])
+
+
+@router.get("/performance", response_model=ScannerPerformanceResponse)
+def get_scanner_performance(
+    window_hours: int = Query(default=24, ge=1, le=720),
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> ScannerPerformanceResponse:
+    return ConsoleService(db).get_scanner_performance(window_hours=window_hours)
 
 
 @router.get("/summary", response_model=ConsoleSummaryResponse)
@@ -44,7 +54,7 @@ def update_scanners(
     db: Session = Depends(get_db),
 ) -> ConsoleScannersResponse:
     try:
-        return ConsoleService(db).update_scanners(payload.enabled_scanners)
+        return ConsoleService(db).update_scanners(payload.enabled_scanners, strict_mode=payload.strict_mode)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

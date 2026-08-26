@@ -58,6 +58,9 @@ class PrivacyFilterScanner:
             raise RuntimeError("opf package is unavailable for Privacy Filter scanner.")
         self._ensure_checkpoint()
         self._scanner = self._build_scanner()
+        # OPF initializes its tokenizer/runtime lazily. A real inference here keeps
+        # tokenizer downloads and model initialization out of the first user request.
+        self._scanner.redact("Privacy filter warmup check.")
 
     def scan(self, text: str) -> list[dict]:
         candidate = text or ""
@@ -96,30 +99,64 @@ class PrivacyFilterScanner:
         return matches
 
     def _scan_chinese_context_probes(self, scanner, text: str) -> list[dict]:
-        matches: list[dict] = []
         lines = list(self._iter_nonempty_lines(text))
+        probes: list[dict] = []
         for index, (line, start) in enumerate(lines):
-            probes = self._build_context_probes(line, lines[index - 1][0] if index > 0 else "")
-            for prefix, allowed_types in probes:
-                probe_text = f"{prefix}{line}"
-                try:
-                    result = scanner.redact(probe_text)
-                except Exception:
-                    logger.debug("Privacy Filter context probe failed.", exc_info=True)
-                    continue
-                for match in self._extract_matches(probe_text, result):
-                    if match["type"] not in allowed_types:
-                        continue
-                    local_start = self._find_probe_value_offset(line, match["original"])
-                    if local_start is None:
-                        continue
-                    matches.append(
-                        {
-                            **match,
-                            "start": start + local_start,
-                            "end": start + local_start + len(match["original"]),
-                        }
-                    )
+            for prefix, allowed_types in self._build_context_probes(
+                line,
+                lines[index - 1][0] if index > 0 else "",
+            ):
+                probes.append(
+                    {
+                        "text": f"{prefix}{line}",
+                        "line": line,
+                        "source_start": start,
+                        "allowed_types": allowed_types,
+                    }
+                )
+        if not probes:
+            return []
+
+        combined_parts: list[str] = []
+        cursor = 0
+        for probe in probes:
+            probe["combined_start"] = cursor
+            combined_parts.append(probe["text"])
+            cursor += len(probe["text"])
+            probe["combined_end"] = cursor
+            combined_parts.append("\n")
+            cursor += 1
+
+        combined = "".join(combined_parts)
+        try:
+            result = scanner.redact(combined)
+        except Exception:
+            logger.debug("Privacy Filter batched context probe failed.", exc_info=True)
+            return []
+
+        matches: list[dict] = []
+        for match in self._extract_matches(combined, result):
+            probe = next(
+                (
+                    item
+                    for item in probes
+                    if item["combined_start"] <= match["start"]
+                    and match["end"] <= item["combined_end"]
+                ),
+                None,
+            )
+            if probe is None or match["type"] not in probe["allowed_types"]:
+                continue
+            local_start = self._find_probe_value_offset(probe["line"], match["original"])
+            if local_start is None:
+                continue
+            matches.append(
+                {
+                    **match,
+                    "start": probe["source_start"] + local_start,
+                    "end": probe["source_start"] + local_start + len(match["original"]),
+                }
+            )
         return matches
 
     def _build_context_probes(self, line: str, previous_line: str) -> list[tuple[str, set[str]]]:
@@ -239,14 +276,9 @@ class PrivacyFilterScanner:
         normalized = (value or "auto").strip().lower()
         if normalized == "cuda":
             return "cuda"
-        if normalized == "cpu":
-            return "cpu"
-        try:
-            import torch
-
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            return "cpu"
+        # Keep OPF on CPU by default. Qwen3Guard owns the local GPU lane and
+        # Windows OPF CUDA execution additionally requires Triton MoE kernels.
+        return "cpu"
 
     @staticmethod
     def _resolve_decode_mode(value: str) -> Literal["viterbi", "argmax"]:

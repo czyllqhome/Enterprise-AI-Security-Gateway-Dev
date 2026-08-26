@@ -78,7 +78,18 @@ Install dependencies and apply migrations from `backend/`:
 ```powershell
 uv sync --group dev --link-mode=copy
 uv run alembic upgrade head
+uv run python scripts/prepare_scanner_assets.py
 ```
+
+The asset preparation step downloads and validates the tokenizer during deployment/build preparation so Privacy Filter never downloads it in a user request.
+
+Verify warm scanner latency and the Qwen3Guard runtime device before deployment:
+
+```powershell
+uv run python scripts/benchmark_scanners.py --samples 5
+```
+
+The benchmark reports the actual Qwen3Guard device and warm p50/p95 latency. Production readiness requires the scanner proof secret to contain at least 32 random bytes.
 
 The migration creates these business tables:
 
@@ -101,6 +112,23 @@ From `backend/`:
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8002 --reload
 ```
 
+For a multi-instance/AWS deployment, keep file review out of the web process and run it as a separate ECS service or process:
+
+```env
+APP_ENV=production
+FILE_REVIEW_WORKER_MODE=external
+FILE_REVIEW_ACTIVE_STORAGE_PROFILE=linux
+FILE_REVIEW_LINUX_STORAGE_PATH=/mnt/ai-gateway-files
+```
+
+```powershell
+uv run python -m app.workers.file_review_worker
+```
+
+The worker claims PostgreSQL jobs with a lease and `SKIP LOCKED`, retries transient failures, and recovers expired jobs after a process restart. Every API and worker replica must see the same files; on AWS, mount the same encrypted EFS access point at `FILE_REVIEW_LINUX_STORAGE_PATH` (or replace the storage adapter with S3 before using ephemeral ECS storage). `FILE_REVIEW_WORKER_MODE=embedded` is intended for one-process local development only.
+
+`POST /api/chat/confirm/stream` emits NDJSON model deltas. When it is exposed through ALB or a reverse proxy, disable response buffering and choose an idle timeout longer than the provider timeout.
+
 API metadata, docs, and health check:
 
 - `http://127.0.0.1:8002/`
@@ -119,6 +147,8 @@ Invoke-RestMethod http://127.0.0.1:8002/api/health
 - `GET /api/sessions`
 - `POST /api/chat/preview` accepts `attachment_file_id` to include a reviewed upload in the scanned prompt
 - `POST /api/chat/confirm` accepts the same `attachment_file_id` to rebuild the approved attachment context before model dispatch
+- `POST /api/chat/confirm/stream` validates the same one-use scan proof and streams model deltas as NDJSON
+- `GET /api/console/performance` reports scan p50/p95/p99 and per-scanner latency/errors
 - `GET /api/console/summary`
 - `GET /api/console/scanners`
 - `GET /api/console/token-usage`
@@ -143,7 +173,7 @@ Only the active runtime profile path is created on the current host. The inactiv
 
 The upload flow is intentionally split from model dispatch:
 
-1. `POST /api/file-review/files/upload` persists the file and starts asynchronous extraction/review.
+1. `POST /api/file-review/files/upload` streams the file to storage and enqueues durable extraction/review work in PostgreSQL.
 2. The frontend polls `GET /api/file-review/files/{file_id}` until `status` is `completed`.
 3. `POST /api/chat/preview` receives the user message plus `attachment_file_id`.
 4. `ChatService` checks ownership/admin access, blocks incomplete or high-risk files, appends extracted text, and scans the combined prompt.

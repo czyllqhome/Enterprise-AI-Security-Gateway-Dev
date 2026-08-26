@@ -1,8 +1,11 @@
 from sqlalchemy import desc, func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
+from ..models.chat_message import ChatMessage
 from ..models.chat_session import ChatSession
+from ..schemas.messages import MessageResponse
+from ..schemas.sessions import SessionDetail
 from .provider_credential_service import ProviderCredentialService
 
 
@@ -42,6 +45,7 @@ class SessionService:
         stmt = select(ChatSession).order_by(desc(ChatSession.updated_at), desc(ChatSession.id))
         if username is not None:
             stmt = stmt.where(ChatSession.created_by == username)
+        stmt = stmt.limit(max(self.settings.session_list_limit, 1))
         return list(self.db.scalars(stmt).all())
 
     def get_session(self, session_id: int, username: str | None = None) -> ChatSession:
@@ -53,17 +57,29 @@ class SessionService:
             raise SessionNotFoundError(f"Session {session_id} was not found.")
         return session
 
-    def get_session_detail(self, session_id: int, username: str | None = None) -> ChatSession:
-        stmt = select(ChatSession).options(selectinload(ChatSession.messages)).where(ChatSession.id == session_id)
-        if username is not None:
-            stmt = stmt.where(ChatSession.created_by == username)
-        session = self.db.scalar(stmt)
-        if session is None:
-            raise SessionNotFoundError(f"Session {session_id} was not found.")
-        return session
+    def get_session_detail(self, session_id: int, username: str | None = None) -> SessionDetail:
+        session = self.get_session(session_id, username=username)
+        newest_messages = list(
+            self.db.scalars(
+                select(ChatMessage)
+                .where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+                .limit(max(self.settings.session_detail_message_limit, 1))
+            ).all()
+        )
+        return SessionDetail(
+            id=session.id,
+            title=session.title,
+            created_by=session.created_by,
+            provider=session.provider,
+            model=session.model,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+            messages=[MessageResponse.model_validate(item) for item in reversed(newest_messages)],
+        )
 
     def delete_session(self, session_id: int, username: str | None = None) -> None:
-        session = self.get_session_detail(session_id, username=username)
+        session = self.get_session(session_id, username=username)
         self.db.delete(session)
         self.db.commit()
 

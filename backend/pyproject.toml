@@ -34,6 +34,7 @@ dependencies = [
   "python-dotenv>=1.0.1,<2.0.0",
   "optimum[onnxruntime]>=2.1.0",
   "accelerate>=1.0.0,<2.0.0",
+  "torch==2.11.0",
   "opf @ git+https://github.com/openai/privacy-filter.git",
 ]
 
@@ -52,3 +53,11 @@ package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
