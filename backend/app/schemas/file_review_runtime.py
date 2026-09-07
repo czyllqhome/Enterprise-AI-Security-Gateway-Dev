@@ -22,7 +22,17 @@ class ExtractedSegmentPayload:
 
 
 @dataclass(slots=True)
+class VisualReviewUnit:
+    location: str
+    image_bytes: bytes
+
+
+@dataclass(slots=True)
 class ExtractedDocument:
     summary: str
     plain_text: str
     segments: list[ExtractedSegmentPayload] = field(default_factory=list)
+    # Only a parser that enumerates all supported original content may certify this.
+    coverage_complete: bool = False
+    coverage_issues: list[str] = field(default_factory=list)
+    visual_units: list[VisualReviewUnit] = field(default_factory=list)

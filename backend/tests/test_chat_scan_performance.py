@@ -68,6 +68,9 @@ class FakeGuardrailService:
 
 
 class FakeLLMClient:
+    def validate_attachments(self, _messages, _model: str) -> None:
+        return None
+
     def chat(self, _messages, _model: str) -> str:
         return "assistant reply"
 
@@ -127,6 +130,7 @@ def test_preview_and_confirm_execute_scanners_only_once(db_session, monkeypatch)
     )
     response = service.confirm_message(
         ChatConfirmRequest(
+            snapshot_id=preview.snapshot_id,
             session_id=session.id,
             original_message=preview.original_message,
             sanitized_message=preview.sanitized_message,
@@ -176,6 +180,7 @@ def test_tampered_confirmation_is_rejected_without_rescan(db_session):
     with pytest.raises(ScanConfirmationError):
         service.confirm_message(
             ChatConfirmRequest(
+                snapshot_id=preview.snapshot_id,
                 session_id=session.id,
                 original_message=preview.original_message,
                 sanitized_message="tampered",
@@ -212,6 +217,7 @@ def test_streaming_confirmation_persists_only_after_completion(db_session, monke
     events = list(
         service.confirm_message_stream(
             ChatConfirmRequest(
+                snapshot_id=preview.snapshot_id,
                 session_id=session.id,
                 original_message=preview.original_message,
                 sanitized_message=preview.sanitized_message,

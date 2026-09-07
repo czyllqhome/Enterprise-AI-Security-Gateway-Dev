@@ -20,3 +20,4 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     session = relationship("ChatSession", back_populates="messages")
+    attachments = relationship("MessageAttachment", lazy="selectin", cascade="all, delete-orphan")

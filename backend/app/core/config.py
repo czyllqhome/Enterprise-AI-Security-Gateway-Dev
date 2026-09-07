@@ -11,6 +11,14 @@ DEFAULT_DATABASE_URL = "postgresql+psycopg://ai_guard_user:change-me-strong-pass
 
 
 class Settings(BaseSettings):
+    office_converter_path: str = Field(default="", alias="OFFICE_CONVERTER_PATH")
+    office_converter_timeout: int = Field(default=120, ge=1, le=600, alias="OFFICE_CONVERTER_TIMEOUT")
+    file_review_policy_version: str = Field(default="1", alias="FILE_REVIEW_POLICY_VERSION")
+    file_review_vision_model: str = Field(default="", alias="FILE_REVIEW_VISION_MODEL")
+    file_review_vision_base_url: str = Field(default="http://127.0.0.1:11434", alias="FILE_REVIEW_VISION_BASE_URL")
+    file_review_vision_timeout: int = Field(default=120, ge=1, le=600, alias="FILE_REVIEW_VISION_TIMEOUT")
+    # provider -> exact model -> accepted MIME types, enabled only after endpoint verification.
+    attachment_capabilities: dict[str, dict[str, list[str]]] = Field(default_factory=dict, alias="ATTACHMENT_CAPABILITIES")
     app_name: str = "LLM Guard Demo"
     app_env: str = Field(default="development", alias="APP_ENV")
     app_host: str = Field(default="127.0.0.1", alias="APP_HOST")

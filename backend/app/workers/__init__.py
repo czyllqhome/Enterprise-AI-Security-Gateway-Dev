@@ -1,1 +1,1 @@
-"""Background workers that consume durable database-backed jobs."""
+"""Worker entry points for durable database-backed jobs."""

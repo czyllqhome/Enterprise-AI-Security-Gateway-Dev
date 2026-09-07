@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,7 @@ def create_completed_uploaded_file(
     record.extracted_text = text
     record.extracted_segments_json = [{"location": "Image", "text": text, "source_kind": "image_ocr"}]
     record.review_result_json = review_result or {
+        "review_decision": "allow",
         "contains_business_sensitive": False,
         "risk_level": "low",
         "summary": "Attachment is allowed.",
@@ -156,7 +158,7 @@ def test_uploaded_file_is_stored_under_username_directory(client, db_session, tm
     created = service.create_uploaded_file(
         UploadedFilePayload(
             filename="Quarter Plan.pdf",
-            content=b"%PDF-1.4 demo",
+            content=pdf_bytes(),
             content_type="application/pdf",
         ),
         username="alice",
@@ -168,42 +170,7 @@ def test_uploaded_file_is_stored_under_username_directory(client, db_session, tm
     assert created.status == "queued"
 
 
-def test_durable_file_review_job_can_be_reclaimed_after_lease_expiry(db_session, monkeypatch):
-    testing_session_local = sessionmaker(autoflush=False, autocommit=False, bind=db_session.get_bind())
-    monkeypatch.setattr("app.services.file_review_service.SessionLocal", testing_session_local)
-    record = UploadedFile(
-        original_filename="queued.pdf",
-        stored_filename="queued.pdf",
-        file_type="pdf",
-        content_type="application/pdf",
-        extension=".pdf",
-        size_bytes=10,
-        storage_path="/tmp/queued.pdf",
-        uploaded_by="alice",
-        status="queued",
-        next_attempt_at=datetime.now(UTC) - timedelta(seconds=1),
-    )
-    db_session.add(record)
-    db_session.commit()
-
-    first_claim = FileReviewService.claim_next_job("worker-a")
-    assert first_claim == (record.id, "worker-a")
-    db_session.expire_all()
-    claimed = db_session.get(UploadedFile, record.id)
-    assert claimed is not None and claimed.status == "processing"
-    assert claimed.attempt_count == 1
-
-    claimed.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
-    db_session.commit()
-    second_claim = FileReviewService.claim_next_job("worker-b")
-    assert second_claim == (record.id, "worker-b")
-    db_session.expire_all()
-    reclaimed = db_session.get(UploadedFile, record.id)
-    assert reclaimed is not None and reclaimed.attempt_count == 2
-    assert reclaimed.lease_owner == "worker-b"
-
-
-def test_chat_attachment_context_uses_extracted_file_text(db_session):
+def test_legacy_attachment_cannot_be_forwarded_without_identity(db_session):
     create_user(db_session, "alice")
     record = create_completed_uploaded_file(
         db_session,
@@ -214,14 +181,8 @@ def test_chat_attachment_context_uses_extracted_file_text(db_session):
     service = ChatService.__new__(ChatService)
     service.db = db_session
 
-    message = service._build_message_with_attachment_context(
-        "总结这个文件",
-        attachment_file_id=record.id,
-        username="alice",
-    )
-
-    assert "[Attachment: purchase-order.png]" in message
-    assert "Purchase order total is 880000 CNY" in message
+    with pytest.raises(GuardrailViolationError):
+        service._read_attachments(record.id, username="alice")
 
 
 def test_chat_attachment_context_blocks_high_risk_file(db_session):
@@ -241,11 +202,7 @@ def test_chat_attachment_context_blocks_high_risk_file(db_session):
     service.db = db_session
 
     with pytest.raises(GuardrailViolationError):
-        service._build_message_with_attachment_context(
-            "总结这个文件",
-            attachment_file_id=record.id,
-            username="alice",
-        )
+        service._read_attachments(record.id, username="alice")
 
 
 def test_file_list_requires_auth_and_scopes_regular_users(client, db_session):
@@ -287,3 +244,87 @@ def test_file_detail_requires_owner_or_admin(client, db_session):
     response = client.get(f"/api/file-review/files/{bob_file.id}", headers=auth_headers("admin"))
     assert response.status_code == 200
     assert response.json()["id"] == bob_file.id
+
+
+def pdf_bytes():
+    import fitz
+    with fitz.open() as document:
+        document.new_page().insert_text((40, 40), "Public document")
+        return document.tobytes()
+
+
+def test_status_and_retry_require_file_permission(client, db_session):
+    from app.models.attachment import AttachmentIdentity
+    from app.models.review_job import ReviewJob
+    user = create_user(db_session, "alice")
+    create_user(db_session, "bob")
+    record = create_uploaded_file(db_session, uploaded_by="alice", filename="private.pdf")
+    db_session.add(AttachmentIdentity(file_id=record.id, owner_user_id=user.id,
+        sha256="a" * 64, verified_mime="application/pdf", decision="unknown"))
+    db_session.commit()
+    for method, suffix in [("GET", "status"), ("POST", "retry")]:
+        url = f"/api/file-review/files/{record.id}/{suffix}"
+        assert client.request(method, url).status_code == 401
+        assert client.request(method, url, headers=auth_headers("bob")).status_code == 404
+    status_response = client.get(f"/api/file-review/files/{record.id}/status", headers=auth_headers("alice"))
+    assert status_response.status_code == 200
+    assert "extracted_text" not in status_response.json()
+    assert "storage_path" not in status_response.json()
+    assert status_response.json()["completed_checkpoints"] == 0
+    retry = client.post(f"/api/file-review/files/{record.id}/retry", headers=auth_headers("alice"))
+    assert retry.status_code == 200
+    assert retry.json()["status"] == "processing"
+    assert db_session.get(ReviewJob, record.id).state == "queued"
+
+
+def test_owner_can_revoke_original_file_and_stale_worker_lease(tmp_path, client, db_session):
+    from datetime import datetime, timedelta, timezone
+    from app.models.attachment import AttachmentIdentity
+    from app.models.review_job import ReviewJob
+
+    alice = create_user(db_session, "alice")
+    create_user(db_session, "bob")
+    path = tmp_path / "private.pdf"
+    content = pdf_bytes()
+    path.write_bytes(content)
+    record = create_uploaded_file(db_session, uploaded_by="alice", filename="private.pdf")
+    record.storage_path = str(path)
+    db_session.add(AttachmentIdentity(
+        file_id=record.id,
+        owner_user_id=alice.id,
+        sha256=hashlib.sha256(content).hexdigest(),
+        verified_mime="application/pdf",
+        reviewed_sha256=hashlib.sha256(content).hexdigest(),
+        review_policy="old-policy",
+        decision="allow",
+    ))
+    db_session.add(ReviewJob(
+        file_id=record.id,
+        state="running",
+        phase="scanning",
+        lease_token="stale-worker",
+        lease_until=datetime.now(timezone.utc) + timedelta(minutes=1),
+        next_attempt_at=datetime.now(timezone.utc),
+        attempts=1,
+    ))
+    db_session.commit()
+
+    assert client.delete(
+        f"/api/file-review/files/{record.id}", headers=auth_headers("bob"),
+    ).status_code == 404
+    response = client.delete(
+        f"/api/file-review/files/{record.id}", headers=auth_headers("alice"),
+    )
+
+    assert response.status_code == 204
+    assert not path.exists()
+    db_session.expire_all()
+    assert db_session.get(UploadedFile, record.id).status == "deleted"
+    assert db_session.get(AttachmentIdentity, record.id).decision == "unknown"
+    job = db_session.get(ReviewJob, record.id)
+    assert job.phase == "revoked"
+    assert job.lease_token is None
+    service = ChatService.__new__(ChatService)
+    service.db = db_session
+    with pytest.raises(GuardrailViolationError):
+        service._read_attachments(record.id, username="alice")

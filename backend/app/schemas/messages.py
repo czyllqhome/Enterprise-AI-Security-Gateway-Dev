@@ -6,7 +6,15 @@ from .guardrail import GuardrailEntity
 from ..services.guardrails.business_sensitive_scanner import BusinessSensitiveResult
 
 
+class MessageAttachmentResponse(BaseModel):
+    file_id: int
+    filename: str
+    sha256: str
+    model_config = {"from_attributes": True}
+
+
 class MessageResponse(BaseModel):
+    attachments: list[MessageAttachmentResponse] = Field(default_factory=list)
     id: int
     role: str
     original_content: str | None
@@ -27,6 +35,7 @@ class ChatPreviewRequest(BaseModel):
 
 
 class ChatPreviewResponse(BaseModel):
+    snapshot_id: str | None = None
     scan_event_id: int | None = None
     session_id: int
     attachment_file_id: int | None = None
@@ -51,6 +60,7 @@ class ChatPreviewResponse(BaseModel):
 
 
 class ChatConfirmRequest(BaseModel):
+    snapshot_id: str | None = None
     session_id: int
     original_message: str
     sanitized_message: str

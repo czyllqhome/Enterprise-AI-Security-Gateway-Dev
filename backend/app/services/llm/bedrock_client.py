@@ -35,6 +35,7 @@ class BedrockClient(BaseLLMClient):
             ) from exc
 
     def chat(self, messages: list[dict], model: str) -> str:
+        self.validate_attachments(messages, model)
         system, converse_messages = self._to_converse_messages(messages)
         kwargs = {
             "modelId": model,

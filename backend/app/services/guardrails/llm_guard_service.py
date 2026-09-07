@@ -251,7 +251,23 @@ class GuardrailService:
         business_runtime: Any | None = None,
         business_runtime_unavailable: bool = False,
         strict_mode: bool | None = None,
+        strict: bool = False,
     ) -> GuardrailScanResult:
+        # Compatibility for the original-file reviewer: validate required local
+        # scanners synchronously so malformed/unavailable results fail closed.
+        if strict:
+            enabled_for_preflight = self._normalize_enabled_scanners(enabled_scanners)
+            availability = self.get_scanner_availability(db=db)
+            missing = [name for name in enabled_for_preflight if not availability.get(name, False)]
+            if missing:
+                raise RuntimeError("Required attachment scanners are unavailable: " + ", ".join(missing))
+            if set(enabled_for_preflight) & {"prompt_injection", "ban_topics"}:
+                moderation = self._qwen3guard_scanner.scan_prompt(text)
+                if not self._qwen3guard_scanner._parse_output(moderation.raw_output)[0]:
+                    raise RuntimeError("Attachment moderation returned an invalid verdict.")
+            if "privacy_filter" in enabled_for_preflight:
+                self._privacy_filter_scanner.scan(text)
+            strict_mode = True
         scan_started = time.perf_counter()
         enabled = self._normalize_enabled_scanners(enabled_scanners)
         enabled_set = set(enabled)

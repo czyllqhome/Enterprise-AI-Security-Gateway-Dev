@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from ..core.config import get_settings
 from ..core.db import configure_database
-from ..services.file_review_service import FileReviewService
+from .document_worker import run_one
 
 
 logger = logging.getLogger(__name__)
@@ -24,13 +24,7 @@ class FileReviewWorker:
         self._thread: Thread | None = None
 
     def run_once(self) -> bool:
-        claimed = FileReviewService.claim_next_job(self.worker_id)
-        if claimed is None:
-            return False
-        file_id, lease_owner = claimed
-        logger.info("File-review job claimed. file_id=%s worker=%s", file_id, lease_owner)
-        FileReviewService.process_claimed_job(file_id, lease_owner)
-        return True
+        return run_one()
 
     def run_forever(self) -> None:
         poll_seconds = max(self.settings.file_review_worker_poll_seconds, 0.1)

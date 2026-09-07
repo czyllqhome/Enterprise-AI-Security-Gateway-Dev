@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from ..core.config import get_settings
 from ..schemas.file_review import FileReviewHit, FileReviewResult
@@ -35,11 +35,17 @@ INSURANCE_CONTEXT_RE = re.compile(
 
 
 class FileReviewChunkResult(BaseModel):
-    contains_business_sensitive: bool = False
-    risk_level: str = "low"
-    summary: str = ""
-    confidence: float = 0.0
-    categories: list[BusinessSensitiveCategory] = Field(default_factory=list)
+    contains_business_sensitive: bool = Field(strict=True)
+    risk_level: Literal["low", "medium", "high"]
+    summary: str
+    confidence: float = Field(ge=0, le=1)
+    categories: list[BusinessSensitiveCategory]
+
+    @model_validator(mode="after")
+    def consistent_verdict(self):
+        if not self.contains_business_sensitive and (self.categories or self.risk_level != "low"):
+            raise ValueError("Inconsistent file review verdict")
+        return self
 
 
 class FileReviewScanner:
@@ -53,8 +59,6 @@ class FileReviewScanner:
             else settings.file_review_model
         )
         self.timeout_seconds = settings.file_review_timeout_seconds
-        self.chunk_workers = max(settings.file_review_chunk_workers, 1)
-        self.max_chunks = max(settings.file_review_max_chunks, 1)
         if self.provider == "bedrock":
             self.client = BedrockBusinessSensitiveClient(
                 region_name=settings.bedrock_region,
@@ -85,19 +89,28 @@ class FileReviewScanner:
         highest_risk = "low"
         summaries: list[str] = []
         categories: set[str] = set()
+        chunks = self._build_review_chunks(segments)
+        failed_locations: list[str] = []
+        reviewed_chunks = 0
 
-        review_chunks = self._build_review_chunks(segments)[: self.max_chunks]
-        reviewed_chunks: list[tuple[int, dict[str, str], FileReviewChunkResult]] = []
-        with ThreadPoolExecutor(max_workers=min(self.chunk_workers, len(review_chunks))) as executor:
-            futures = {
-                executor.submit(self._review_segment, segment["location"], segment["text"]): (index, segment)
-                for index, segment in enumerate(review_chunks)
-            }
-            for future in as_completed(futures):
-                index, segment = futures[future]
-                reviewed_chunks.append((index, segment, future.result()))
-
-        for _, segment, chunk_result in sorted(reviewed_chunks, key=lambda item: item[0]):
+        for segment in chunks:
+            store = getattr(self, "checkpoint_store", None)
+            if store:
+                chunk_result = store.run("business", segment["location"], segment["text"].encode(),
+                    lambda: self._review_segment(segment["location"], segment["text"]),
+                    lambda value: value.model_dump(), FileReviewChunkResult.model_validate,
+                    lambda value: value is not None and (not value.contains_business_sensitive or (
+                        bool(value.categories) and all(category.name in BUSINESS_SENSITIVE_CATEGORIES
+                            and bool(category.matched_text) and self._text_contains_evidence(segment["text"], category.matched_text)
+                            and (not category.name.startswith("insurance_") or INSURANCE_CONTEXT_RE.search(segment["text"]))
+                            for category in value.categories)
+                    )))
+            else:
+                chunk_result = self._review_segment(segment["location"], segment["text"])
+            if chunk_result is None:
+                failed_locations.append(segment["location"])
+                continue
+            reviewed_chunks += 1
             if chunk_result.summary and chunk_result.summary != "No business-sensitive content detected.":
                 summaries.append(f"{segment['location']}: {chunk_result.summary}")
             segment_hits: list[FileReviewHit] = []
@@ -119,6 +132,10 @@ class FileReviewScanner:
                         location=segment["location"],
                     )
                 )
+            if chunk_result.contains_business_sensitive and not segment_hits:
+                # A positive verdict with unverifiable evidence is not a clean scan.
+                failed_locations.append(segment["location"])
+                reviewed_chunks -= 1
             if not segment_hits:
                 continue
             hits.extend(segment_hits)
@@ -130,9 +147,19 @@ class FileReviewScanner:
             highest_risk = "medium"
 
         return FileReviewResult(
+            review_decision=(
+                # The original bytes cannot be masked before transmission, so every
+                # confirmed business-sensitive finding blocks the attachment.
+                "block" if contains
+                else "unknown" if failed_locations else "allow"
+            ),
+            total_chunks=len(chunks),
+            reviewed_chunks=reviewed_chunks,
+            failed_locations=failed_locations,
             contains_business_sensitive=contains,
             risk_level=highest_risk,
-            summary="; ".join(summaries[:8]) if summaries else "No business-sensitive content detected.",
+            summary=("Review incomplete; some content could not be evaluated." if failed_locations
+                     else "; ".join(summaries[:8]) if summaries else "No business-sensitive content detected."),
             confidence=round(max_confidence, 4),
             categories=sorted(categories),
             hits=hits[:30],
@@ -165,6 +192,18 @@ class FileReviewScanner:
             if not text:
                 continue
             location = segment.location or "Document"
+            if len(text) > FILE_REVIEW_CHUNK_CHAR_LIMIT:
+                flush()
+                # Overlap protects entities/phrases straddling a chunk boundary.
+                step = FILE_REVIEW_CHUNK_CHAR_LIMIT - 100
+                for offset in range(0, len(text), step):
+                    chunks.append({
+                        "location": f"{location} (chars {offset + 1}-{min(offset + FILE_REVIEW_CHUNK_CHAR_LIMIT, len(text))})",
+                        "text": text[offset:offset + FILE_REVIEW_CHUNK_CHAR_LIMIT],
+                    })
+                    if offset + FILE_REVIEW_CHUNK_CHAR_LIMIT >= len(text):
+                        break
+                continue
             if current_parts and current_length + len(text) > FILE_REVIEW_CHUNK_CHAR_LIMIT:
                 flush()
             current_parts.append(text)
@@ -186,7 +225,7 @@ class FileReviewScanner:
             return " / ".join(locations)
         return f"{locations[0]} - {locations[-1]}"
 
-    def _review_segment(self, location: str, text: str) -> FileReviewChunkResult:
+    def _review_segment(self, location: str, text: str) -> FileReviewChunkResult | None:
         prompt = self._build_prompt(location, text)
         try:
             response = self.client.generate(prompt)
@@ -199,13 +238,7 @@ class FileReviewScanner:
             logger.warning("File review parsing failed at %s: %s", location, exc)
         except Exception as exc:
             logger.warning("File review model call failed at %s: %s", location, exc)
-        return FileReviewChunkResult(
-            contains_business_sensitive=False,
-            risk_level="low",
-            summary="No business-sensitive content detected.",
-            confidence=0.0,
-            categories=[],
-        )
+        return None
 
     def _build_prompt(self, location: str, text: str) -> str:
         allowed_categories = ", ".join(BUSINESS_SENSITIVE_CATEGORIES)
@@ -231,7 +264,7 @@ class FileReviewScanner:
             "The reason must describe the concrete evidence type found in this segment, not a generic industry template.\n"
             f"Segment location: {location}\n"
             "Document segment:\n"
-            f"{text[:6000]}"
+            f"{text}"
         )
 
     def _text_contains_evidence(self, text: str, evidence: str) -> bool:

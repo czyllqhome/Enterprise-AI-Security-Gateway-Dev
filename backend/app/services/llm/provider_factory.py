@@ -47,6 +47,10 @@ def get_llm_client(provider: str, db: Session | None = None):
             credential.api_key,
             credential.display_name,
             tuple(sorted((default_headers or {}).items())),
+            tuple(
+                (model, tuple(mimes))
+                for model, mimes in sorted(get_settings().attachment_capabilities.get(normalized, {}).items())
+            ),
         )
         return _cached_client(
             key,
@@ -55,6 +59,7 @@ def get_llm_client(provider: str, db: Session | None = None):
                 base_url=credential.base_url,
                 provider_label=credential.display_name,
                 default_headers=default_headers,
+                attachment_capabilities=get_settings().attachment_capabilities.get(normalized, {}),
             ),
         )
     if normalized == "bedrock":
