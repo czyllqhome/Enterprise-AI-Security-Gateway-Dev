@@ -16,7 +16,8 @@
 - 已实现敏感信息识别、脱敏占位、提示注入检测、限制主题检测、源代码阻断和商务敏感内容扫描。
 - 已实现 OpenAI、阿里云百炼/Qwen、OpenRouter、AWS Bedrock 和 Ollama 模型提供商配置。
 - 已实现管理员控制台、扫描器开关/严格模式、扫描性能统计、审计日志、Token Usage 估算和 14 天趋势统计。
-- 已实现附件流式上传、Office/PDF/图片文本提取、OCR 和基于 PostgreSQL 持久队列的异步文件内容审核。
+- 已实现附件上传、原件哈希与 MIME 校验、Office/PDF/图片文本提取、OCR/视觉护栏，以及基于 PostgreSQL 持久任务和单元断点的异步原件审核。
+- 文件提取、OCR 和视觉识别结果只用于本工具的安全与隐私审核；业务模型接收用户 Prompt 与审核通过的原文件，不会接收自动拼接的提取正文或审核摘要。
 - 后端使用 PostgreSQL 和 Alembic 迁移；启动时仍保留 `Base.metadata.create_all` 与兼容性补字段逻辑。
 - 当前后端包含文件权限和聊天扫描性能测试；前端暂未发现单元测试或 E2E 测试配置。
 - 仓库中仍保留 `backend/app/static/` 旧静态页面资源，但主线前端已经迁移到 `frontend/`。
@@ -29,7 +30,10 @@
 - 新增扫描器严格模式：严格模式下，已启用扫描器不可用、报错或超时会按失败关闭策略阻止请求；管理端 `/admin/scanners` 可切换该模式。
 - 新增 `GET /api/health/ready` 就绪检查，用于验证启用的扫描器和生产环境扫描凭证密钥；不满足条件时返回 `503`，原有 `GET /api/health` 继续作为存活检查。
 - 文件审核由进程内临时后台任务升级为 PostgreSQL 持久队列，支持任务租约、`SKIP LOCKED` 并发领取、失败重试和进程重启后的过期任务恢复。单进程开发默认使用内嵌 worker，多实例部署应使用独立 worker。
-- 上传接口改为分块写入文件，避免将完整附件一次性加载到内存；文件审核新增并行分块和最大分块数配置。
+- 上传接口限制请求大小并校验实际文件类型；文件审核不会静默截断长文档，模型或解析失败会得到 `unknown` 并禁止原件外发。
+- 新增原件 SHA-256、审核策略版本、发送快照和消息附件关系；确认发送时重新校验权限、策略、原件字节与预览快照，重复确认不会重复调用模型。
+- PDF 页面、图片帧和 Office 包内媒体可进入本地视觉护栏；Office 整页审核支持通过显式配置的 LibreOffice/soffice 隔离渲染，转换器不可用时保持失败关闭。
+- OpenAI 兼容适配器通过 Responses 文件输入发送原件；只有 `ATTACHMENT_CAPABILITIES` 明确允许的模型/MIME 组合才可启用，其他适配器拒绝附件且不降级为提取文字。
 - 增加数据库连接池、聊天上下文 token/消息上限、会话查询上限和管理查询时间窗口，减少长会话和大数据量下的资源占用。
 - LLM 客户端增加复用缓存，OpenAI 兼容接口、AWS Bedrock 和 Ollama 均支持流式输出。
 - 新增扫描器资产预准备和基准脚本，部署前可提前准备 Privacy Filter tokenizer，并验证 Qwen3Guard 实际运行设备及预热后的延迟。
@@ -76,6 +80,7 @@
 │   └── cloud-deployment-sop.md
 ├── design md/
 │   ├── Enterprise-AI-Security-Gateway-Dev-Plan.md
+│   ├── attachment-understanding-development-plan.md
 │   ├── dashboard_design.md
 │   └── chat-sample功能说明.md
 ├── frontend/
@@ -91,6 +96,7 @@
 │       └── styles.css
 └── backend/
     ├── README.md
+    ├── ORIGINAL_ATTACHMENTS.md
     ├── pyproject.toml
     ├── uv.lock
     ├── .env.example
@@ -156,6 +162,10 @@ API_KEY_ENCRYPTION_SECRET=replace-with-another-long-random-secret
 SCAN_PROOF_SECRET=replace-with-at-least-32-random-bytes
 SCANNER_STRICT_MODE=true
 FILE_REVIEW_WORKER_MODE=embedded
+ATTACHMENT_CAPABILITIES={}
+FILE_REVIEW_VISION_MODEL=
+FILE_REVIEW_VISION_BASE_URL=http://127.0.0.1:11434
+OFFICE_CONVERTER_PATH=
 DEFAULT_ADMIN_USERNAME=admin
 DEFAULT_ADMIN_PASSWORD=replace-with-a-strong-password
 CORS_ORIGINS=http://127.0.0.1:5173
@@ -278,6 +288,7 @@ npm run build
 
 聊天输入栏支持上传：
 
+- `.doc`
 - `.docx`
 - `.xlsx`
 - `.pptx`
@@ -288,9 +299,11 @@ npm run build
 - `.bmp`
 - `.webp`
 
-文件上传采用分块写入，并在 PostgreSQL 中创建持久审核任务。worker 负责内容提取、OCR 和商务敏感审核，支持任务租约、并发领取、失败重试和异常退出恢复。默认单文件上限为 20 MB，默认存储目录为 `backend/uploaded-documents`。
+文件上传后会保存原件哈希和验证后的 MIME，并在 PostgreSQL 中创建持久审核任务。worker 从原文件生成仅供护栏使用的文本、OCR、页面图像、Office 包内容和可选的渲染页面，依次执行视觉、商务敏感、隐私与安全扫描。任务支持租约、心跳、失败重试、异常恢复和按单元复用成功断点。任何未覆盖内容、扫描器不可用、模型无效响应或文件变化都会使结果保持 `unknown`，不能发送原件。默认单文件上限为 20 MB，默认存储目录为 `backend/uploaded-documents`。
 
-聊天输入栏会显示附件上传状态、提取摘要、风险状态和文本预览。前端在预扫描和确认请求中传递 `attachment_file_id`；后端只允许附件所有者或管理员访问，并会阻止仍在处理、无法读取或被判定为高风险的附件。管理员可在 `/admin/configuration` 配置 Windows/Linux 存储路径、当前存储配置和是否按用户名创建子目录。
+聊天输入栏默认显示文件名、类型、状态与审核决定；提取内容仅在折叠的“审核详情（仅用于安全与隐私检查）”中查看。预扫描只扫描用户 Prompt，并创建绑定用户、会话、模型、配置、Prompt 和附件哈希的发送快照。确认阶段重新校验快照、一次性 `scan_proof`、权限、审核策略和实际原件哈希，然后将用户 Prompt 与原文件作为独立输入发送给明确支持该 MIME 的模型。提取正文、OCR、视觉描述和审核摘要不会加入业务 Prompt，也不会在模型不支持原件时充当降级输入。
+
+详细协议、worker、配置和失败关闭规则见 [`backend/ORIGINAL_ATTACHMENTS.md`](backend/ORIGINAL_ATTACHMENTS.md)，开发及验收记录见 [`design md/attachment-understanding-development-plan.md`](design%20md/attachment-understanding-development-plan.md)。
 
 本地单进程开发默认使用内嵌 worker：
 
@@ -314,7 +327,8 @@ uv run python -m app.workers.file_review_worker
 - 扫描凭证：`SCAN_PROOF_SECRET`、`SCAN_PROOF_TTL_SECONDS`、`REQUIRE_SCAN_PROOF`
 - 扫描策略：`SCANNER_STRICT_MODE`、`SCANNER_TOTAL_DEADLINE_MS`、`SCANNER_EXECUTOR_WORKERS`
 - 扫描器资源：`PRIVACY_FILTER_TIMEOUT_MS`、`PRIVACY_FILTER_WORKERS`、`QWEN3GUARD_DEVICE`、`QWEN3GUARD_TIMEOUT_MS`、`QWEN3GUARD_WORKERS`、`BUSINESS_SENSITIVE_TIMEOUT_MS`、`BUSINESS_SENSITIVE_WORKERS`
-- 文件存储与队列：`FILE_REVIEW_ACTIVE_STORAGE_PROFILE`、`FILE_REVIEW_WINDOWS_STORAGE_PATH`、`FILE_REVIEW_LINUX_STORAGE_PATH`、`FILE_REVIEW_PER_USER_STORAGE_DIRS`、`FILE_REVIEW_WORKER_MODE`、`FILE_REVIEW_WORKER_POLL_SECONDS`、`FILE_REVIEW_JOB_LEASE_SECONDS`、`FILE_REVIEW_JOB_MAX_ATTEMPTS`、`FILE_REVIEW_CHUNK_WORKERS`、`FILE_REVIEW_MAX_CHUNKS`
+- 文件存储与队列：`FILE_REVIEW_ACTIVE_STORAGE_PROFILE`、`FILE_REVIEW_WINDOWS_STORAGE_PATH`、`FILE_REVIEW_LINUX_STORAGE_PATH`、`FILE_REVIEW_PER_USER_STORAGE_DIRS`、`FILE_REVIEW_WORKER_MODE`、`FILE_REVIEW_WORKER_POLL_SECONDS`、`FILE_REVIEW_JOB_LEASE_SECONDS`、`FILE_REVIEW_JOB_MAX_ATTEMPTS`
+- 原件与视觉能力：`ATTACHMENT_CAPABILITIES`、`FILE_REVIEW_VISION_MODEL`、`FILE_REVIEW_VISION_BASE_URL`、`FILE_REVIEW_VISION_TIMEOUT`、`OFFICE_CONVERTER_PATH`、`OFFICE_CONVERTER_TIMEOUT`
 - 数据库连接池：`DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT_SECONDS`、`DB_POOL_RECYCLE_SECONDS`
 - 查询与上下文限制：`CHAT_CONTEXT_TOKEN_BUDGET`、`CHAT_CONTEXT_MAX_MESSAGES`、`SESSION_LIST_LIMIT`、`SESSION_DETAIL_MESSAGE_LIMIT`、`ADMIN_QUERY_LOOKBACK_DAYS`、`ADMIN_QUERY_MAX_ROWS`
 

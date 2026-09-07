@@ -11,8 +11,8 @@ The backend provides:
 - prompt scanning, sensitive-data masking, prompt-injection detection, and topic restrictions
 - OpenAI-compatible provider configuration for OpenAI, Qwen, OpenRouter, and Ollama
 - audit logs, scanner governance, management dashboards, and token usage estimates
-- Office, PDF, and image upload with extraction, OCR, and asynchronous content review
-- reviewed attachments can be attached to chat prompts by `attachment_file_id`, with extracted text appended server-side
+- Office, PDF, and image upload with immutable identity, extraction/OCR/visual guardrails, and asynchronous original-file review
+- reviewed attachments can be referenced by `attachment_file_id`; extracted/OCR/review text stays inside the guardrail path while the downstream model receives the user prompt and approved original bytes
 - authenticated chat, session, provider, attachment, and administration APIs
 
 ## Requirements
@@ -145,14 +145,17 @@ Invoke-RestMethod http://127.0.0.1:8002/api/health
 
 - `POST /api/auth/login`
 - `GET /api/sessions`
-- `POST /api/chat/preview` accepts `attachment_file_id` to include a reviewed upload in the scanned prompt
-- `POST /api/chat/confirm` accepts the same `attachment_file_id` to rebuild the approved attachment context before model dispatch
+- `POST /api/chat/preview` validates `attachment_file_id`, scans only the user prompt, and returns both a signed `scan_proof` and server-side `snapshot_id`
+- `POST /api/chat/confirm` validates the same snapshot, proof, policy, permission, and original hash before model dispatch
 - `POST /api/chat/confirm/stream` validates the same one-use scan proof and streams model deltas as NDJSON
 - `GET /api/console/performance` reports scan p50/p95/p99 and per-scanner latency/errors
 - `GET /api/console/summary`
 - `GET /api/console/scanners`
 - `GET /api/console/token-usage`
 - `POST /api/file-review/files/upload`
+- `GET /api/file-review/files/{id}/status`
+- `POST /api/file-review/files/{id}/retry`
+- `DELETE /api/file-review/files/{id}`
 - `GET /api/file-review/settings`
 - `PUT /api/file-review/settings`
 - `GET /api/logs`
@@ -173,11 +176,15 @@ Only the active runtime profile path is created on the current host. The inactiv
 
 The upload flow is intentionally split from model dispatch:
 
-1. `POST /api/file-review/files/upload` streams the file to storage and enqueues durable extraction/review work in PostgreSQL.
-2. The frontend polls `GET /api/file-review/files/{file_id}` until `status` is `completed`.
-3. `POST /api/chat/preview` receives the user message plus `attachment_file_id`.
-4. `ChatService` checks ownership/admin access, blocks incomplete or high-risk files, appends extracted text, and scans the combined prompt.
-5. `POST /api/chat/confirm` repeats the server-side attachment lookup before sending the approved prompt to the model.
+1. `POST /api/file-review/files/upload` stores the original bytes, verifies MIME, records SHA-256/owner identity, and enqueues durable review work in PostgreSQL.
+2. The document worker creates internal text, OCR, page-image, Office-package, and optional rendered-page representations. These representations are used only by the gateway's visual, business-sensitive, privacy, and safety guardrails.
+3. Complete successful review writes an `allow` proof bound to the original hash and current policy. Missing coverage, timeout, unavailable scanners, invalid model responses, sensitive findings, or changed bytes produce `block` or `unknown`; neither can be sent.
+4. The frontend polls `GET /api/file-review/files/{file_id}/status`. Extracted text is hidden by default and may appear only in the collapsible audit detail.
+5. `POST /api/chat/preview` scans the user prompt without appending file-derived text, validates the target model/MIME capability, and creates a signed proof plus a server-side send snapshot.
+6. `POST /api/chat/confirm` rechecks the snapshot, one-use proof, authorization, policy, and original SHA-256. The provider adapter receives the user prompt and original file as separate inputs.
+7. There is no fallback that substitutes OCR or extracted text when the selected provider/model cannot accept the original format.
+
+Set `ATTACHMENT_CAPABILITIES` only for endpoint/model/MIME combinations verified against the real provider. Configure `FILE_REVIEW_VISION_MODEL` for local visual review and `OFFICE_CONVERTER_PATH` for isolated Office rendering. See [`ORIGINAL_ATTACHMENTS.md`](ORIGINAL_ATTACHMENTS.md) for the complete operational contract.
 
 ## Local Model Cache
 
@@ -202,7 +209,7 @@ From `backend/`:
 uv run pytest
 ```
 
-The repository includes `tests/test_file_review_permissions.py`, covering file-review authorization, username-based storage, and chat attachment context behavior.
+The repository includes original-byte transport, review completeness, visual/Office coverage, snapshot tampering, authorization, retry/lease, checkpoint, migration, and chat scan-proof regression tests.
 
 ## Security Notes
 
