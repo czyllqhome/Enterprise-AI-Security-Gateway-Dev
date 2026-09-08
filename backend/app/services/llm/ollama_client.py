@@ -12,6 +12,7 @@ class OllamaClient(BaseLLMClient):
         self.provider_label = provider_label
 
     def chat(self, messages: list[dict], model: str) -> str:
+        self.validate_attachments(messages, model)
         payload = json.dumps(
             {
                 "model": model,

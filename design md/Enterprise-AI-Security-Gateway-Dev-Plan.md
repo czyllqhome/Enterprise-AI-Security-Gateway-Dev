@@ -187,7 +187,7 @@ custom_regex
 当前使用模型：
 
 ```env
-QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-0.6B
+QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-4B
 QWEN3GUARD_MODEL_PATH=
 QWEN3GUARD_MAX_NEW_TOKENS=96
 QWEN3GUARD_ENABLED=true
@@ -196,7 +196,7 @@ QWEN3GUARD_ENABLED=true
 当前实现机制：
 
 - 使用本地 Hugging Face Transformers 加载 Qwen3Guard
-- 默认模型：`Qwen/Qwen3Guard-Gen-0.6B`
+- 默认模型：`Qwen/Qwen3Guard-Gen-4B`
 - 优先从本地缓存加载
 - 如本地没有模型，尝试通过 `huggingface_hub.snapshot_download` 下载
 - 使用 `AutoTokenizer`
@@ -251,7 +251,7 @@ PromptInjection 触发条件：
 
 当前使用模型：
 
-- 与 PromptInjection 共用 `Qwen/Qwen3Guard-Gen-0.6B`
+- 与 PromptInjection 共用 `Qwen/Qwen3Guard-Gen-4B`
 
 当前实现机制：
 
@@ -828,8 +828,8 @@ admin only：
 
 ```text
 BanCode: LLM Guard BanCode + heuristic fallback
-PromptInjection: Qwen/Qwen3Guard-Gen-0.6B
-BanTopics: Qwen/Qwen3Guard-Gen-0.6B + local topic mapping
+PromptInjection: Qwen/Qwen3Guard-Gen-4B
+BanTopics: Qwen/Qwen3Guard-Gen-4B + local topic mapping
 Privacy Filter: openai/privacy-filter via OPF
 Business Sensitive: Ollama qwen3.5:4b structured JSON classifier
 Custom Regex: local Chinese/English sensitive patterns
@@ -1058,7 +1058,7 @@ BUSINESS_SENSITIVE_OLLAMA_URL=http://127.0.0.1:11434
 BUSINESS_SENSITIVE_TIMEOUT_SECONDS=20
 
 QWEN3GUARD_ENABLED=true
-QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-0.6B
+QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-4B
 QWEN3GUARD_MODEL_PATH=
 QWEN3GUARD_MAX_NEW_TOKENS=96
 ```

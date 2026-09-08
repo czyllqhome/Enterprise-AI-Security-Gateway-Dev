@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-import os
+import tarfile
 from pathlib import Path
 
 from ..core.config import get_settings
@@ -46,52 +46,111 @@ class FileOCRService:
             return None
         try:
             cache_root = Path(__file__).resolve().parents[2] / ".runtime-cache"
-            paddle_cache = cache_root / "paddle"
-            paddle_cache.mkdir(parents=True, exist_ok=True)
-            os.environ["PADDLE_HOME"] = str(paddle_cache)
-            os.environ["XDG_CACHE_HOME"] = str(cache_root)
-            os.environ["HOME"] = str(cache_root)
-            os.environ["USERPROFILE"] = str(cache_root)
             # PaddleOCR pulls in albumentations, which imports torch via
             # albumentations.pytorch. Preloading torch keeps its Windows DLL
             # initialization stable before PaddleOCR loads additional native deps.
             import torch  # noqa: F401
             from paddleocr import PaddleOCR
 
-            det_model_dir = self._resolve_model_dir(self.settings.file_ocr_det_model_dir)
-            rec_model_dir = self._resolve_model_dir(self.settings.file_ocr_rec_model_dir)
-            cls_model_dir = self._resolve_model_dir(self.settings.file_ocr_cls_model_dir)
-
-            if det_model_dir:
-                logger.info("Using local PaddleOCR det model: %s", det_model_dir)
-            if rec_model_dir:
-                logger.info("Using local PaddleOCR rec model: %s", rec_model_dir)
-            if cls_model_dir:
-                logger.info("Using local PaddleOCR cls model: %s", cls_model_dir)
-            if det_model_dir and not rec_model_dir:
-                logger.warning("Local PaddleOCR det model found, but rec model is not configured; PaddleOCR may still try to download rec.")
-            if det_model_dir and not cls_model_dir:
-                logger.warning("Local PaddleOCR det model found, but cls model is not configured; PaddleOCR may still try to download cls.")
-
-            self._ocr_engine = PaddleOCR(
-                use_angle_cls=True,
-                lang="ch",
-                det_model_dir=det_model_dir,
-                rec_model_dir=rec_model_dir,
-                cls_model_dir=cls_model_dir,
+            model_cache = cache_root / "paddleocr"
+            det_model_dir = self._resolve_model_dir(
+                self.settings.file_ocr_det_model_dir,
+                model_cache / "det",
             )
+            rec_model_dir = self._resolve_model_dir(
+                self.settings.file_ocr_rec_model_dir,
+                model_cache / "rec",
+            )
+            cls_model_dir = self._resolve_model_dir(
+                self.settings.file_ocr_cls_model_dir,
+                model_cache / "cls",
+            )
+
+            model_dirs = (det_model_dir, rec_model_dir, cls_model_dir)
+            for model_dir in model_dirs:
+                Path(model_dir).mkdir(parents=True, exist_ok=True)
+                self._discard_corrupt_archives(Path(model_dir))
+            logger.info(
+                "Using PaddleOCR model directories: det=%s rec=%s cls=%s",
+                det_model_dir,
+                rec_model_dir,
+                cls_model_dir,
+            )
+
+            try:
+                self._ocr_engine = self._create_engine(
+                    PaddleOCR, det_model_dir, rec_model_dir, cls_model_dir,
+                )
+            except Exception as exc:
+                if not self._is_corrupt_archive_error(exc):
+                    raise
+                removed = sum(
+                    self._discard_download_archives(Path(model_dir))
+                    for model_dir in model_dirs
+                )
+                if not removed:
+                    raise
+                logger.warning(
+                    "Discarded %s incomplete PaddleOCR download(s); retrying once.",
+                    removed,
+                )
+                self._ocr_engine = self._create_engine(
+                    PaddleOCR, det_model_dir, rec_model_dir, cls_model_dir,
+                )
             return self._ocr_engine
         except Exception as exc:
             self._load_error = exc
             logger.warning("PaddleOCR is unavailable; OCR features will be skipped. reason=%s", exc)
             return None
 
-    def _resolve_model_dir(self, raw_value: str) -> str | None:
+    def _create_engine(self, paddle_ocr, det_model_dir: str, rec_model_dir: str, cls_model_dir: str):
+        return paddle_ocr(
+            use_angle_cls=True,
+            lang="ch",
+            det_model_dir=det_model_dir,
+            rec_model_dir=rec_model_dir,
+            cls_model_dir=cls_model_dir,
+        )
+
+    def _resolve_model_dir(self, raw_value: str, fallback: Path) -> str:
         candidate = (raw_value or "").strip()
         if not candidate:
-            return None
+            return str(fallback.resolve())
         path = Path(candidate).expanduser().resolve()
-        if path.exists() and path.is_dir():
-            return str(path)
-        logger.warning("Configured PaddleOCR model directory does not exist: %s", path)
-        return None
+        if path.exists() and not path.is_dir():
+            raise ValueError(f"Configured PaddleOCR model path is not a directory: {path}")
+        if not path.exists():
+            logger.info("PaddleOCR model directory will be initialized: %s", path)
+        return str(path)
+
+    def _discard_corrupt_archives(self, model_dir: Path) -> int:
+        removed = 0
+        for archive in model_dir.glob("*.tar"):
+            try:
+                with tarfile.open(archive, "r") as handle:
+                    # Reading every member forces tarfile to detect a truncated payload.
+                    for member in handle:
+                        if member.isfile():
+                            extracted = handle.extractfile(member)
+                            if extracted is not None:
+                                while extracted.read(1024 * 1024):
+                                    pass
+            except (tarfile.TarError, EOFError, OSError):
+                archive.unlink(missing_ok=True)
+                removed += 1
+                logger.warning("Removed corrupt PaddleOCR model archive: %s", archive)
+        return removed
+
+    def _discard_download_archives(self, model_dir: Path) -> int:
+        removed = 0
+        for archive in model_dir.glob("*.tar"):
+            archive.unlink(missing_ok=True)
+            removed += 1
+        return removed
+
+    def _is_corrupt_archive_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return isinstance(exc, (tarfile.TarError, EOFError)) or any(
+            marker in message
+            for marker in ("unexpected end of data", "truncated", "unexpected end of file")
+        )

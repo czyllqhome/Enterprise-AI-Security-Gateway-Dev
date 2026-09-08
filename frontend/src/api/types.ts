@@ -22,6 +22,7 @@ export type Provider = {
 };
 
 export type Message = {
+  attachments?: Array<{ file_id: number; filename: string; sha256: string }>;
   id: number;
   role: "user" | "assistant";
   original_content: string | null;
@@ -66,6 +67,7 @@ export type BusinessSensitiveResult = {
 };
 
 export type ChatPreview = {
+  snapshot_id: string | null;
   scan_event_id: number | null;
   session_id: number;
   attachment_file_id: number | null;
@@ -102,6 +104,10 @@ export type UploadedFile = {
   extracted_text: string | null;
   extracted_segments: ExtractedSegment[];
   review_result: {
+    review_decision: "allow" | "block" | "unknown";
+    total_chunks: number;
+    reviewed_chunks: number;
+    failed_locations: string[];
     contains_business_sensitive: boolean;
     risk_level: "low" | "medium" | "high" | string;
     summary: string;

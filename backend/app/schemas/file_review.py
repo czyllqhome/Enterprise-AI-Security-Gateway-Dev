@@ -39,6 +39,13 @@ class FileReviewHit(BaseModel):
 
 
 class FileReviewResult(BaseModel):
+    # Legacy records have no proof of complete review and must be re-reviewed.
+    review_decision: Literal["allow", "block", "unknown"] = "unknown"
+    total_chunks: int = 0
+    reviewed_chunks: int = 0
+    failed_locations: list[str] = Field(default_factory=list)
+    total_visual_units: int = 0
+    reviewed_visual_units: int = 0
     contains_business_sensitive: bool = False
     risk_level: str = "low"
     summary: str = ""
@@ -75,3 +82,18 @@ class UploadedFileResponse(BaseModel):
 
 class UploadedFileListResponse(BaseModel):
     files: list[UploadedFileResponse]
+
+
+class FileReviewStatusResponse(BaseModel):
+    id: int
+    status: str
+    phase: str
+    review_decision: Literal["allow", "block", "unknown"]
+    total_chunks: int = 0
+    reviewed_chunks: int = 0
+    total_visual_units: int = 0
+    reviewed_visual_units: int = 0
+    completed_checkpoints: int = 0
+    failed_checkpoints: int = 0
+    attempts: int = 0
+    error_message: str | None = None

@@ -14,6 +14,10 @@ class UnsupportedProviderError(Exception):
     pass
 
 
+RETIRED_QWEN_MODELS = {"qwen-plus", "qwen3.6-plus"}
+REQUIRED_QWEN_MODELS = ("qwen3.8-flash",)
+
+
 class ProviderCredentialService:
     def __init__(self, db: Session):
         self.db = db
@@ -131,7 +135,11 @@ class ProviderCredentialService:
     def _normalize_models(self, models: list[str] | None, definition: ProviderDefinition) -> list[str]:
         normalized = [(item or "").strip() for item in (models or [])]
         normalized = [item for item in normalized if item]
-        return normalized or list(definition.default_models)
+        normalized = normalized or list(definition.default_models)
+        if definition.provider == "qwen":
+            normalized = [item for item in normalized if item not in RETIRED_QWEN_MODELS]
+            normalized.extend(item for item in REQUIRED_QWEN_MODELS if item not in normalized)
+        return normalized
 
     def _get_credential_record(self, provider: str) -> ProviderCredential | None:
         stmt = select(ProviderCredential).where(ProviderCredential.provider == provider.lower())

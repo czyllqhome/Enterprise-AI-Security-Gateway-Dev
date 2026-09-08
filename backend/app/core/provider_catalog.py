@@ -32,8 +32,7 @@ def get_provider_catalog() -> dict[str, ProviderDefinition]:
             default_models=(
                 "deepseek-v4-flash",
                 "deepseek-v4-pro",
-                "qwen-plus",
-                "qwen3.6-plus",
+                "qwen3.8-flash",
             ),
         ),
         "openrouter": ProviderDefinition(

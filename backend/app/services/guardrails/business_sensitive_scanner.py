@@ -439,7 +439,7 @@ class BusinessSensitiveScanner:
                 raise ValueError("Aliyun Bailian API key is not configured.")
             return BusinessSensitiveRuntimeConfig(
                 provider="qwen",
-                model=model or settings.business_sensitive_qwen_model or "deepseek-v4-flash",
+                model=model or settings.business_sensitive_qwen_model or "qwen3.8-flash",
                 base_url=base_url,
                 api_key=api_key,
                 display_name=display_name,
@@ -504,7 +504,10 @@ class BusinessSensitiveScanner:
     def _default_model_for_provider(self, provider: BusinessSensitiveProvider) -> str:
         settings = get_settings()
         if provider == "qwen":
-            return settings.business_sensitive_qwen_model or "deepseek-v4-flash"
+            configured_model = settings.business_sensitive_qwen_model.strip()
+            if not configured_model or configured_model == "deepseek-v4-flash":
+                return "qwen3.8-flash"
+            return configured_model
         if provider == "bedrock":
             return settings.business_sensitive_bedrock_model or settings.bedrock_default_model
         return settings.business_sensitive_model or "qwen3.5:4b"

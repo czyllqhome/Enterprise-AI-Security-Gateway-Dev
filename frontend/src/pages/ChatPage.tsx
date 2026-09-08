@@ -136,28 +136,49 @@ export function ChatPage() {
   }, []);
 
   useEffect(() => {
-    if (!attachment || !["queued", "processing"].includes(attachment.status)) {
-      return;
-    }
-    const timer = window.setTimeout(async () => {
+    if (!attachment || !["queued", "processing"].includes(attachment.status)) return;
+    let cancelled = false;
+    let inFlight = false;
+    const fileId = attachment.id;
+    const timer = window.setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const latest = await apiFetch<UploadedFile>(`/api/file-review/files/${attachment.id}`);
-        setAttachment(latest);
-        if (latest.status === "completed") {
-          setStatus(
-            latest.review_result?.contains_business_sensitive
-              ? `附件审核完成，发现${latest.review_result.risk_level}风险内容。`
-              : "附件安全审核完成。",
-          );
-        } else if (latest.status === "failed") {
-          setStatus(latest.error_message || "附件安全审核失败。");
+        const progress = await apiFetch<{ status: string; phase: string }>(`/api/file-review/files/${fileId}/status`);
+        if (cancelled) return;
+        if (progress.status === "processing") {
+          setStatus(progress.phase === "queued" ? "附件等待后台审核。" : "附件正在解析或审核。");
+        } else {
+          const latest = await apiFetch<UploadedFile>(`/api/file-review/files/${fileId}`);
+          if (cancelled) return;
+          setAttachment(latest);
+          setStatus(latest.status === "failed" ? latest.error_message || "附件审核失败。"
+            : latest.review_result?.review_decision === "allow" ? "附件审核通过，可以发送原文件。"
+            : latest.review_result?.review_decision === "block" ? "附件被安全策略阻断。"
+            : "附件审核未完成，可查看详情或重试。");
         }
       } catch {
-        // Keep the current upload visible if a polling request briefly fails.
+        // The interval remains active after transient failures.
+      } finally {
+        inFlight = false;
       }
     }, 2000);
-    return () => window.clearTimeout(timer);
-  }, [attachment]);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [attachment?.id, attachment?.status]);
+
+  async function retryAttachmentReview() {
+    if (!attachment) return;
+    setLoading(true);
+    try {
+      const latest = await apiFetch<UploadedFile>(`/api/file-review/files/${attachment.id}/retry`, { method: "POST" });
+      setAttachment(latest);
+      setStatus("附件已加入审核队列。");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "无法重试审核。");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function bootstrap() {
     const providerData = await apiFetch<{ providers: Provider[] }>("/api/providers");
@@ -274,6 +295,7 @@ export function ChatPage() {
           body: JSON.stringify({
             session_id: targetSessionId,
             original_message: targetPreview.original_message,
+            snapshot_id: targetPreview.snapshot_id,
             sanitized_message: targetPreview.sanitized_message,
             scan_event_id: targetPreview.scan_event_id,
             scan_proof: targetPreview.scan_proof,
@@ -389,6 +411,9 @@ export function ChatPage() {
     if (attachment.status === "failed") {
       return attachment.error_message || "审核失败";
     }
+    if (!attachment.review_result || attachment.review_result.review_decision === "unknown") {
+      return "审核未完成，暂不可发送，请重新上传或重试审核";
+    }
     if (attachment.review_result?.contains_business_sensitive) {
       return `发现${attachment.review_result.risk_level}风险内容`;
     }
@@ -399,7 +424,7 @@ export function ChatPage() {
     if (!attachmentName) {
       return true;
     }
-    return attachment?.status === "completed" && !isHighRiskAttachment(attachment);
+    return attachment?.status === "completed" && attachment.review_result?.review_decision === "allow" && !isHighRiskAttachment(attachment);
   }
 
   function attachmentPreviewText() {
@@ -490,6 +515,9 @@ export function ChatPage() {
             <article className={`message ${item.role}`} key={item.id}>
               <span>{item.role === "user" ? "你" : "助手"}</span>
               <p>{messageText(item)}</p>
+              {item.attachments?.map((file) => (
+                <div className="attachment-preview" key={file.file_id}>{file.filename} · 原文件附件</div>
+              ))}
               <small>{formatDateTime(item.created_at)}</small>
             </article>
           ))}
@@ -574,7 +602,7 @@ export function ChatPage() {
           <div className="composer-input">
             <textarea ref={messageInputRef} value={message} onChange={handleMessageChange} placeholder="输入消息，系统会先进行安全扫描..." />
             {attachmentName ? (
-              <section className={`attachment-preview ${attachment?.status === "failed" ? "failed" : ""} ${isHighRiskAttachment(attachment) ? "blocked" : ""}`}>
+              <section className={`attachment-preview ${attachment?.status === "failed" ? "failed" : ""} ${attachment?.review_result?.review_decision === "block" || isHighRiskAttachment(attachment) ? "blocked" : ""}`}>
                 <div className="attachment-preview-head">
                   {uploadingAttachment || attachment?.status === "processing" ? (
                     <LoaderCircle className="spin" size={18} />
@@ -591,16 +619,26 @@ export function ChatPage() {
                     <X size={16} />
                   </button>
                 </div>
+                {attachment && attachment.status !== "processing" && attachment.review_result?.review_decision !== "allow" ? (
+                  <button type="button" className="secondary-btn" disabled={loading} onClick={retryAttachmentReview}>重新审核</button>
+                ) : null}
                 {attachment?.status === "completed" ? (
                   <div className="attachment-preview-body">
                     <div className="attachment-preview-meta">
                       <span>{attachment.file_type}</span>
                       <span>{attachment.uploaded_by}</span>
-                      <span>{attachment.review_result?.risk_level || "low"} risk</span>
+                      <span>{attachment.review_result?.review_decision === "block"
+                        ? "安全策略阻断"
+                        : attachment.review_result?.review_decision === "unknown" || !attachment.review_result?.review_decision
+                          ? "审核结果待确认"
+                          : `${attachment.review_result.risk_level} risk`}</span>
                     </div>
-                    {attachment.extraction_summary ? <p>{attachment.extraction_summary}</p> : null}
-                    {attachment.review_result?.summary ? <p>{attachment.review_result.summary}</p> : null}
-                    {attachmentPreviewText() ? <pre>{attachmentPreviewText()}</pre> : null}
+                    <p>审核允许后，将用户输入与原文件发送给模型。</p>
+                    <details>
+                      <summary>审核详情（仅用于安全与隐私检查）</summary>
+                      {attachment.review_result?.summary ? <p>{attachment.review_result.summary}</p> : null}
+                      {attachmentPreviewText() ? <pre>{attachmentPreviewText()}</pre> : null}
+                    </details>
                   </div>
                 ) : null}
               </section>
@@ -610,7 +648,7 @@ export function ChatPage() {
                 ref={attachmentInputRef}
                 className="visually-hidden"
                 type="file"
-                accept=".docx,.xlsx,.pptx,.pdf,.png,.jpg,.jpeg,.bmp,.webp"
+                accept=".doc,.docx,.xlsx,.pptx,.pdf,.png,.jpg,.jpeg,.bmp,.webp"
                 onChange={handleAttachmentChange}
               />
               <button

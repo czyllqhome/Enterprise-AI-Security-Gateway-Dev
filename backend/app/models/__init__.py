@@ -1,4 +1,7 @@
 """ORM models."""
+from .attachment import AttachmentIdentity, ChatSendSnapshot, MessageAttachment
+from .review_job import ReviewJob
+from .review_checkpoint import ReviewCheckpoint
 
 from .chat_log import ChatLog
 from .chat_message import ChatMessage

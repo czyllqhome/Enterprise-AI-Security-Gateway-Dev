@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
-from ...core.config import get_settings
+from ...core.config import DEFAULT_QWEN3GUARD_MODEL, get_settings
 from ...core.model_cache import configure_local_model_cache
 from ...schemas.guardrail import GuardrailEntity, GuardrailScanResult
 from ..system_setting_service import INPUT_SCANNER_IDS
@@ -218,6 +218,7 @@ def _build_local_bancode_model(model: Any | None) -> Any | None:
 class GuardrailService:
     def __init__(self) -> None:
         self.settings = get_settings()
+        self._privacy_filter_recovery_lock = threading.Lock()
         self._privacy_filter_scanner = self._build_privacy_filter_scanner()
         self._bancode_scanner = self._build_bancode_scanner()
         self._qwen3guard_scanner = self._build_qwen3guard_scanner()
@@ -251,7 +252,23 @@ class GuardrailService:
         business_runtime: Any | None = None,
         business_runtime_unavailable: bool = False,
         strict_mode: bool | None = None,
+        strict: bool = False,
     ) -> GuardrailScanResult:
+        # Compatibility for the original-file reviewer: validate required local
+        # scanners synchronously so malformed/unavailable results fail closed.
+        if strict:
+            enabled_for_preflight = self._normalize_enabled_scanners(enabled_scanners)
+            availability = self.get_scanner_availability(db=db)
+            missing = [name for name in enabled_for_preflight if not availability.get(name, False)]
+            if missing:
+                raise RuntimeError("Required attachment scanners are unavailable: " + ", ".join(missing))
+            if set(enabled_for_preflight) & {"prompt_injection", "ban_topics"}:
+                moderation = self._qwen3guard_scanner.scan_prompt(text)
+                if not self._qwen3guard_scanner._parse_output(moderation.raw_output)[0]:
+                    raise RuntimeError("Attachment moderation returned an invalid verdict.")
+            if "privacy_filter" in enabled_for_preflight:
+                self._privacy_filter_scanner.scan(text)
+            strict_mode = True
         scan_started = time.perf_counter()
         enabled = self._normalize_enabled_scanners(enabled_scanners)
         enabled_set = set(enabled)
@@ -474,8 +491,21 @@ class GuardrailService:
 
     def _scan_privacy_filter_or_raise(self, text: str) -> list[dict]:
         if self._privacy_filter_scanner is None:
+            self._recover_privacy_filter_scanner()
+        if self._privacy_filter_scanner is None:
             raise RuntimeError("Privacy Filter is unavailable.")
         return self._privacy_filter_scanner.scan(text)
+
+    def _recover_privacy_filter_scanner(self) -> None:
+        """Recover after a checkpoint is installed while the API is running."""
+        lock = getattr(self, "_privacy_filter_recovery_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._privacy_filter_recovery_lock = lock
+        with lock:
+            if self._privacy_filter_scanner is not None:
+                return
+            self._privacy_filter_scanner = self._build_privacy_filter_scanner()
 
     def _resolve_business_sensitive_runtime(self, db: Session | None):
         if self._business_sensitive_scanner is None or not self._business_sensitive_scanner.enabled:
@@ -584,10 +614,10 @@ class GuardrailService:
         }
 
     def get_scanner_runtime_details(self, db: Session | None = None) -> dict[str, str]:
-        prompt_injection_model = getattr(self._qwen3guard_scanner, "model_reference", None) or "Qwen/Qwen3Guard-Gen-0.6B"
+        prompt_injection_model = getattr(self._qwen3guard_scanner, "model_reference", None) or DEFAULT_QWEN3GUARD_MODEL
         qwen3guard_device = getattr(self._qwen3guard_scanner, "runtime_device", None) or "unavailable"
         bancode_model = self._get_model_path(self._bancode_scanner) or "LLM Guard BanCode heuristic fallback"
-        ban_topics_model = getattr(self._qwen3guard_scanner, "model_reference", None) or "Qwen/Qwen3Guard-Gen-0.6B"
+        ban_topics_model = getattr(self._qwen3guard_scanner, "model_reference", None) or DEFAULT_QWEN3GUARD_MODEL
         privacy_filter_model = getattr(self._privacy_filter_scanner, "model_reference", None) or "local checkpoint unavailable"
 
         return {

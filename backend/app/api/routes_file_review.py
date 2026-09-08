@@ -10,6 +10,7 @@ from ..schemas.file_review import (
     FileStorageSettingsUpdateRequest,
     UploadedFileListResponse,
     UploadedFileResponse,
+    FileReviewStatusResponse,
 )
 from ..services.file_review_service import (
     FileReviewService,
@@ -79,3 +80,29 @@ def upload_file_for_review(
         )
     except FileReviewValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/files/{file_id}/status", response_model=FileReviewStatusResponse)
+def file_status(file_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        return FileReviewService(db).get_status(file_id, current_user=current_user)
+    except UploadedFileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/files/{file_id}/retry", response_model=UploadedFileResponse)
+def retry_file(file_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        return FileReviewService(db).retry_review(file_id, current_user=current_user)
+    except UploadedFileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileReviewValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_file(file_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> None:
+    try:
+        FileReviewService(db).revoke_file(file_id, current_user=current_user)
+    except UploadedFileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
