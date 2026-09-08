@@ -2,7 +2,7 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "re
 import { CheckCircle2, FileText, LoaderCircle, LogOut, MessageSquarePlus, Paperclip, Send, ShieldAlert, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { apiFetch, apiStream } from "../api/client";
-import type { ChatPreview, ChatSession, ChatSessionDetail, GuardrailEntity, Provider, UploadedFile } from "../api/types";
+import type { ChatPreview, ChatSession, ChatSessionDetail, GuardrailEntity, Message, Provider, UploadedFile } from "../api/types";
 import { useAuth } from "../state/AuthContext";
 import { formatDateTime, messageText } from "../utils/format";
 
@@ -14,8 +14,21 @@ type DemoSample = {
 type ChatStreamEvent =
   | { event: "accepted"; scan_event_id: number }
   | { event: "delta"; text: string }
-  | { event: "completed"; response: unknown }
+  | { event: "completed"; response: AssistantReply }
   | { event: "error"; detail: string; retryable: boolean };
+
+type AssistantReply = {
+  session_id: number;
+  session_title: string;
+  user_message: Message;
+  assistant_message: Message;
+};
+
+type PendingUserMessage = {
+  content: string;
+  attachmentName: string;
+  createdAt: string;
+};
 
 const entityLabels: Record<string, string> = {
   ADDRESS: "Address",
@@ -114,6 +127,7 @@ export function ChatPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const messagePaneRef = useRef<HTMLDivElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -128,12 +142,20 @@ export function ChatPage() {
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [loading, setLoading] = useState(false);
   const [streamingReply, setStreamingReply] = useState("");
+  const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessage | null>(null);
 
   const currentProvider = useMemo(() => providers.find((item) => item.provider === provider), [providers, provider]);
 
   useEffect(() => {
     bootstrap();
   }, []);
+
+  useEffect(() => {
+    const pane = messagePaneRef.current;
+    if (pane) {
+      pane.scrollTop = pane.scrollHeight;
+    }
+  }, [pendingUserMessage, selected?.messages.length, streamingReply]);
 
   useEffect(() => {
     if (!attachment || !["queued", "processing"].includes(attachment.status)) return;
@@ -246,6 +268,11 @@ export function ChatPage() {
     }
     setLoading(true);
     setPreview(null);
+    setPendingUserMessage({
+      content: prompt.trim(),
+      attachmentName,
+      createdAt: new Date().toISOString(),
+    });
     try {
       let sessionId = selected?.id;
       if (!sessionId) {
@@ -263,16 +290,19 @@ export function ChatPage() {
         }),
       });
       if (result.status === "blocked") {
+        setPendingUserMessage(null);
         setStatus(result.blocked_reason || "请求已被安全策略拦截。");
         return;
       }
       if (result.status === "needs_confirmation") {
+        setPendingUserMessage(null);
         setPreview(result);
         setStatus(`检测到敏感内容，请确认脱敏版本。扫描耗时 ${Math.round(result.scan_duration_ms)}ms。`);
         return;
       }
       await confirmSend(result, sessionId);
     } catch (exc) {
+      setPendingUserMessage(null);
       setStatus(exc instanceof Error ? exc.message : "发送失败。");
     } finally {
       setLoading(false);
@@ -286,6 +316,13 @@ export function ChatPage() {
     setLoading(true);
     setStatus("正在等待模型回复...");
     setStreamingReply("");
+    setPreview(null);
+    setPendingUserMessage({
+      content: targetPreview.sanitized_message,
+      attachmentName,
+      createdAt: new Date().toISOString(),
+    });
+    let accepted = false;
     try {
       let completed = false;
       await apiStream<ChatStreamEvent>(
@@ -304,11 +341,38 @@ export function ChatPage() {
           }),
         },
         (event) => {
-          if (event.event === "delta") {
+          if (event.event === "accepted") {
+            accepted = true;
+          } else if (event.event === "delta") {
             setStreamingReply((current) => current + event.text);
             setStatus("模型正在生成回复...");
           } else if (event.event === "completed") {
             completed = true;
+            setSelected((current) => {
+              if (!current || current.id !== event.response.session_id) {
+                return current;
+              }
+              const persistedIds = new Set(current.messages.map((item) => item.id));
+              const completedMessages = [event.response.user_message, event.response.assistant_message]
+                .filter((item) => !persistedIds.has(item.id));
+              return {
+                ...current,
+                title: event.response.session_title,
+                updated_at: event.response.assistant_message.created_at,
+                messages: [...current.messages, ...completedMessages],
+              };
+            });
+            setSessions((current) => current.map((session) => (
+              session.id === event.response.session_id
+                ? {
+                    ...session,
+                    title: event.response.session_title,
+                    updated_at: event.response.assistant_message.created_at,
+                  }
+                : session
+            )));
+            setPendingUserMessage(null);
+            setStreamingReply("");
           } else if (event.event === "error") {
             throw new Error(event.detail || "模型流式输出失败。");
           }
@@ -321,8 +385,18 @@ export function ChatPage() {
       clearAttachment();
       setPreview(null);
       setStatus("已发送。");
-      await loadSessions(targetSessionId);
     } catch (exc) {
+      if (accepted) {
+        try {
+          await loadSessions(targetSessionId);
+        } catch {
+          // Keep the original send error visible if refreshing the persisted message also fails.
+        }
+      }
+      setPendingUserMessage(null);
+      if (!accepted && targetPreview.status === "needs_confirmation") {
+        setPreview(targetPreview);
+      }
       setStatus(exc instanceof Error ? exc.message : "确认发送失败。");
     } finally {
       setStreamingReply("");
@@ -510,7 +584,7 @@ export function ChatPage() {
           </button>
         </div>
 
-        <div className="message-pane">
+        <div className="message-pane" ref={messagePaneRef}>
           {selected?.messages.map((item) => (
             <article className={`message ${item.role}`} key={item.id}>
               <span>{item.role === "user" ? "你" : "助手"}</span>
@@ -521,6 +595,16 @@ export function ChatPage() {
               <small>{formatDateTime(item.created_at)}</small>
             </article>
           ))}
+          {pendingUserMessage ? (
+            <article className="message user" aria-live="polite">
+              <span>你</span>
+              <p>{pendingUserMessage.content}</p>
+              {pendingUserMessage.attachmentName ? (
+                <div className="attachment-preview">{pendingUserMessage.attachmentName} · 原文件附件</div>
+              ) : null}
+              <small>{formatDateTime(pendingUserMessage.createdAt)} · 正在发送...</small>
+            </article>
+          ) : null}
           {streamingReply ? (
             <article className="message assistant" aria-live="polite">
               <span>助手</span>
@@ -528,8 +612,8 @@ export function ChatPage() {
               <small>正在生成...</small>
             </article>
           ) : null}
-          {selected && !selected.messages.length ? <p className="empty-state">输入第一条消息开始安全聊天。</p> : null}
-          {!selected ? <p className="empty-state">创建会话后即可开始。</p> : null}
+          {selected && !selected.messages.length && !pendingUserMessage ? <p className="empty-state">输入第一条消息开始安全聊天。</p> : null}
+          {!selected && !pendingUserMessage ? <p className="empty-state">创建会话后即可开始。</p> : null}
         </div>
 
         {preview ? (

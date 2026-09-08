@@ -40,6 +40,7 @@ def get_provider_catalog() -> dict[str, ProviderDefinition]:
             display_name="OpenRouter",
             default_base_url="https://openrouter.ai/api/v1",
             default_models=(
+                "qwen/qwen3.8-flash",
                 "minimax/minimax-m3",
                 "openai/gpt-5.5",
                 "anthropic/claude-fable-5",

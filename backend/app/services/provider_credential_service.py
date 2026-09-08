@@ -16,6 +16,7 @@ class UnsupportedProviderError(Exception):
 
 RETIRED_QWEN_MODELS = {"qwen-plus", "qwen3.6-plus"}
 REQUIRED_QWEN_MODELS = ("qwen3.8-flash",)
+OPENROUTER_DEFAULT_MODEL = "qwen/qwen3.8-flash"
 
 
 class ProviderCredentialService:
@@ -118,8 +119,12 @@ class ProviderCredentialService:
                 updated_at=None,
             )
 
-        models = self._normalize_models(credential.models_json, definition)
-        default_model = credential.default_model if credential.default_model in models else models[0]
+        stored_models = [(item or "").strip() for item in (credential.models_json or [])]
+        models = self._normalize_models(stored_models, definition)
+        if definition.provider == "openrouter" and OPENROUTER_DEFAULT_MODEL not in stored_models:
+            default_model = OPENROUTER_DEFAULT_MODEL
+        else:
+            default_model = credential.default_model if credential.default_model in models else models[0]
         return ProviderCredentialResponse(
             provider=credential.provider,
             display_name=definition.display_name,
@@ -139,6 +144,8 @@ class ProviderCredentialService:
         if definition.provider == "qwen":
             normalized = [item for item in normalized if item not in RETIRED_QWEN_MODELS]
             normalized.extend(item for item in REQUIRED_QWEN_MODELS if item not in normalized)
+        elif definition.provider == "openrouter" and OPENROUTER_DEFAULT_MODEL not in normalized:
+            normalized.insert(0, OPENROUTER_DEFAULT_MODEL)
         return normalized
 
     def _get_credential_record(self, provider: str) -> ProviderCredential | None:
