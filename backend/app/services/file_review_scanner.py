@@ -39,7 +39,10 @@ class FileReviewChunkResult(BaseModel):
     risk_level: Literal["low", "medium", "high"]
     summary: str
     confidence: float = Field(ge=0, le=1)
-    categories: list[BusinessSensitiveCategory]
+    # Some local models omit the optional-looking array for a clean verdict.
+    # Treat that omission as an empty list; a positive verdict without concrete,
+    # verifiable category evidence still fails closed in review().
+    categories: list[BusinessSensitiveCategory] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def consistent_verdict(self):

@@ -26,6 +26,20 @@ def clean_response():
     }))
 
 
+def test_clean_model_response_may_omit_empty_categories():
+    response = SimpleNamespace(raw_text=json.dumps({
+        "contains_business_sensitive": False,
+        "risk_level": "low",
+        "summary": "Public information.",
+        "confidence": 0.9,
+    }))
+
+    result = scanner_with(lambda _: response).review(document("Some public text"))
+
+    assert result.review_decision == "allow"
+    assert result.reviewed_chunks == 1
+
+
 def document(*texts):
     return ExtractedDocument("test", "\n".join(texts), [
         ExtractedSegmentPayload(location=f"Page {index + 1}", text=text)

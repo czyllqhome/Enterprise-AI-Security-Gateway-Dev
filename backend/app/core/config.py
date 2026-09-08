@@ -8,13 +8,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BASE_DIR.parent
 DEFAULT_DATABASE_URL = "postgresql+psycopg://ai_guard_user:change-me-strong-password@127.0.0.1:5432/ai_guard"
+DEFAULT_QWEN3GUARD_MODEL = "Qwen/Qwen3Guard-Gen-4B"
 
 
 class Settings(BaseSettings):
     office_converter_path: str = Field(default="", alias="OFFICE_CONVERTER_PATH")
     office_converter_timeout: int = Field(default=120, ge=1, le=600, alias="OFFICE_CONVERTER_TIMEOUT")
     file_review_policy_version: str = Field(default="1", alias="FILE_REVIEW_POLICY_VERSION")
-    file_review_vision_model: str = Field(default="", alias="FILE_REVIEW_VISION_MODEL")
+    file_review_vision_model: str = Field(default="qwen3.5:4b", alias="FILE_REVIEW_VISION_MODEL")
     file_review_vision_base_url: str = Field(default="http://127.0.0.1:11434", alias="FILE_REVIEW_VISION_BASE_URL")
     file_review_vision_timeout: int = Field(default=120, ge=1, le=600, alias="FILE_REVIEW_VISION_TIMEOUT")
     # provider -> exact model -> accepted MIME types, enabled only after endpoint verification.
@@ -87,7 +88,7 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:11434",
         alias="BUSINESS_SENSITIVE_OLLAMA_URL",
     )
-    business_sensitive_qwen_model: str = Field(default="deepseek-v4-flash", alias="BUSINESS_SENSITIVE_QWEN_MODEL")
+    business_sensitive_qwen_model: str = Field(default="qwen3.8-flash", alias="BUSINESS_SENSITIVE_QWEN_MODEL")
     business_sensitive_qwen_base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
         alias="BUSINESS_SENSITIVE_QWEN_BASE_URL",
@@ -147,8 +148,10 @@ class Settings(BaseSettings):
     file_ocr_rec_model_dir: str = Field(default="", alias="FILE_OCR_REC_MODEL_DIR")
     file_ocr_cls_model_dir: str = Field(default="", alias="FILE_OCR_CLS_MODEL_DIR")
     qwen3guard_enabled: bool = Field(default=True, alias="QWEN3GUARD_ENABLED")
-    qwen3guard_model: str = Field(default="Qwen/Qwen3Guard-Gen-0.6B", alias="QWEN3GUARD_MODEL")
+    qwen3guard_model: str = Field(default=DEFAULT_QWEN3GUARD_MODEL, alias="QWEN3GUARD_MODEL")
     qwen3guard_model_path: str = Field(default="", alias="QWEN3GUARD_MODEL_PATH")
+    # Auto keeps local review available on CPU-only developer machines while
+    # still selecting CUDA when the runtime can actually use it.
     qwen3guard_device: str = Field(default="auto", alias="QWEN3GUARD_DEVICE")
     qwen3guard_max_new_tokens: int = Field(default=48, alias="QWEN3GUARD_MAX_NEW_TOKENS")
     qwen3guard_timeout_ms: int = Field(default=1200, alias="QWEN3GUARD_TIMEOUT_MS")

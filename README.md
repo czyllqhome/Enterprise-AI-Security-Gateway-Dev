@@ -22,7 +22,7 @@
 - 当前后端包含文件权限和聊天扫描性能测试；前端暂未发现单元测试或 E2E 测试配置。
 - 仓库中仍保留 `backend/app/static/` 旧静态页面资源，但主线前端已经迁移到 `frontend/`。
 
-## 最近更新（2026-08）
+## 最近更新（2026-09）
 
 - 聊天扫描器改为并行执行，并为各扫描器设置独立超时、工作线程和总扫描截止时间；响应会返回总耗时及降级扫描器，管理员可通过 `GET /api/console/performance` 查看 p50、p95、p99、错误和超时指标。
 - `POST /api/chat/preview` 会签发短时、一次性的 `scan_proof`。普通确认与流式确认都会校验用户、会话、输入摘要、附件和扫描器配置，防止绕过扫描、篡改内容或重复使用扫描结果。
@@ -36,7 +36,11 @@
 - OpenAI 兼容适配器通过 Responses 文件输入发送原件；只有 `ATTACHMENT_CAPABILITIES` 明确允许的模型/MIME 组合才可启用，其他适配器拒绝附件且不降级为提取文字。
 - 增加数据库连接池、聊天上下文 token/消息上限、会话查询上限和管理查询时间窗口，减少长会话和大数据量下的资源占用。
 - LLM 客户端增加复用缓存，OpenAI 兼容接口、AWS Bedrock 和 Ollama 均支持流式输出。
-- 新增扫描器资产预准备和基准脚本，部署前可提前准备 Privacy Filter tokenizer，并验证 Qwen3Guard 实际运行设备及预热后的延迟。
+- 新增扫描器资产预准备和基准脚本，部署前可提前准备本地 token 计数编码器，并验证 Qwen3Guard 实际运行设备及预热后的延迟。
+- Qwen3Guard 默认模型升级为 `Qwen/Qwen3Guard-Gen-4B`，设备选择改为 `auto`；模型权重必须完整下载后再启动或执行基准，CUDA 13.x 环境需要兼容的 NVIDIA 驱动。
+- PaddleOCR 改用项目内独立的检测、识别和方向分类缓存目录，可清理截断的下载压缩包并自动重试一次；图片元数据改为稳定 JSON，避免浮点表示噪声误命中银行卡规则。
+- 原件审核会保留部分扫描结果：确定的安全命中仍然阻断，而任一必要扫描器降级且没有确定命中时保持 `unknown`，禁止发送原文件。
+- 阿里云百炼聊天模型加入 `qwen3.8-flash` 并移除 `qwen-plus`、`qwen3.6-plus`；Business Sensitive 百炼运行时切换为 `qwen3.8-flash`，已有旧配置会自动兼容。
 - 新增 Alembic 迁移 `20260824_0002`、`20260824_0003` 和 `20260825_0004`；升级代码后必须执行 `uv run alembic upgrade head`。
 - 云部署 SOP 补充了前端、后端和数据库三层 AWS Security Group 规则，以及 Bedrock/外部模型、Ollama 和 PostgreSQL 的最小网络路径。
 
@@ -67,8 +71,9 @@
 - 默认数据库：PostgreSQL，示例连接 `127.0.0.1:5432`
 - 默认数据库名/用户：`ai_guard` / `ai_guard_user`
 - 默认本地模型缓存：`backend/.model-cache/`
+- PromptInjection 和 BanTopics 默认共用本地 `Qwen/Qwen3Guard-Gen-4B`
 - 商务敏感扫描和文件审核默认依赖 Ollama `http://127.0.0.1:11434` 与模型 `qwen3.5:4b`
-- 商务敏感扫描也可在管理端切换到阿里云百炼 `deepseek-v4-flash`
+- 商务敏感扫描也可在管理端切换到阿里云百炼 `qwen3.8-flash`
 
 ## 目录结构
 
@@ -163,8 +168,12 @@ SCAN_PROOF_SECRET=replace-with-at-least-32-random-bytes
 SCANNER_STRICT_MODE=true
 FILE_REVIEW_WORKER_MODE=embedded
 ATTACHMENT_CAPABILITIES={}
-FILE_REVIEW_VISION_MODEL=
+FILE_REVIEW_VISION_MODEL=qwen3.5:4b
 FILE_REVIEW_VISION_BASE_URL=http://127.0.0.1:11434
+QWEN3GUARD_ENABLED=true
+QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-4B
+QWEN3GUARD_MODEL_PATH=
+QWEN3GUARD_DEVICE=auto
 OFFICE_CONVERTER_PATH=
 DEFAULT_ADMIN_USERNAME=admin
 DEFAULT_ADMIN_PASSWORD=replace-with-a-strong-password
@@ -180,6 +189,20 @@ Set-Location backend
 uv sync --group dev --link-mode=copy
 uv run alembic upgrade head
 uv run python scripts/prepare_scanner_assets.py
+```
+
+默认 Qwen3Guard 4B 使用三个 BF16 safetensors 分片，模型索引总大小约 8.82 GB。首次部署建议显式预下载；命令可续传已有的 `.incomplete` 文件：
+
+```powershell
+uv run python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Qwen/Qwen3Guard-Gen-4B', local_dir='.model-cache/qwen3guard/Qwen3Guard-Gen-4B')"
+```
+
+确认模型目录包含 `model-00001-of-00003.safetensors`、`model-00002-of-00003.safetensors` 和 `model-00003-of-00003.safetensors` 后，再启动服务或执行基准。项目当前使用 PyTorch CUDA 13.0；Windows GPU 运行需要 NVIDIA `580+` 驱动。驱动或显存条件不满足时，可先使用已验证的 CPU/0.6B 配置：
+
+```env
+QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-0.6B
+QWEN3GUARD_MODEL_PATH=./.model-cache/qwen3guard/Qwen3Guard-Gen-0.6B
+QWEN3GUARD_DEVICE=cpu
 ```
 
 可在部署前运行扫描器基准，检查 Qwen3Guard 实际设备和预热后的 p50/p95 延迟：
@@ -343,7 +366,7 @@ ollama pull qwen3.5:4b
 ollama serve
 ```
 
-Privacy Filter 默认不会自动下载模型。如果 `backend/.model-cache/openai-privacy-filter` 不存在，需要提前准备模型，或在配置中明确启用自动下载。
+示例配置启用了 `PRIVACY_FILTER_AUTO_DOWNLOAD=true`。生产部署仍建议提前准备并验证 `backend/.model-cache/openai-privacy-filter`，避免首次用户请求触发模型准备。
 
 后端会将 Hugging Face、Transformers、Torch 等缓存重定向到项目本地模型目录，避免污染系统级缓存。
 
@@ -356,10 +379,7 @@ Set-Location backend
 uv run pytest
 ```
 
-当前已发现的测试文件：
-
-- `backend/tests/test_file_review_permissions.py`
-- `backend/tests/test_chat_scan_performance.py`
+测试覆盖聊天扫描凭证与并行性能、附件权限与原件传输、持久任务/租约/断点、Office 与视觉覆盖、PaddleOCR 缓存恢复、图片元数据安全序列化等场景。
 
 前端当前仅配置了构建脚本，未发现单元测试或 E2E 测试脚本。
 

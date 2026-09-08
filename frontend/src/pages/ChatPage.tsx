@@ -602,7 +602,7 @@ export function ChatPage() {
           <div className="composer-input">
             <textarea ref={messageInputRef} value={message} onChange={handleMessageChange} placeholder="输入消息，系统会先进行安全扫描..." />
             {attachmentName ? (
-              <section className={`attachment-preview ${attachment?.status === "failed" ? "failed" : ""} ${isHighRiskAttachment(attachment) ? "blocked" : ""}`}>
+              <section className={`attachment-preview ${attachment?.status === "failed" ? "failed" : ""} ${attachment?.review_result?.review_decision === "block" || isHighRiskAttachment(attachment) ? "blocked" : ""}`}>
                 <div className="attachment-preview-head">
                   {uploadingAttachment || attachment?.status === "processing" ? (
                     <LoaderCircle className="spin" size={18} />
@@ -627,9 +627,11 @@ export function ChatPage() {
                     <div className="attachment-preview-meta">
                       <span>{attachment.file_type}</span>
                       <span>{attachment.uploaded_by}</span>
-                      <span>{attachment.review_result?.review_decision === "unknown" || !attachment.review_result?.review_decision
-                        ? "审核结果待确认"
-                        : `${attachment.review_result.risk_level} risk`}</span>
+                      <span>{attachment.review_result?.review_decision === "block"
+                        ? "安全策略阻断"
+                        : attachment.review_result?.review_decision === "unknown" || !attachment.review_result?.review_decision
+                          ? "审核结果待确认"
+                          : `${attachment.review_result.risk_level} risk`}</span>
                     </div>
                     <p>审核允许后，将用户输入与原文件发送给模型。</p>
                     <details>

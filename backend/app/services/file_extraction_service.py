@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import io
+import json
 import tempfile
 import zipfile
 from xml.etree import ElementTree
@@ -11,6 +12,29 @@ from ..schemas.file_review_runtime import ExtractedDocument, ExtractedSegmentPay
 from .file_ocr_service import FileOCRService
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_image_metadata(value):
+    """Keep metadata reviewable without exposing binary float representation noise."""
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, bytes):
+        return f"<binary data: {len(value)} bytes>"
+    if isinstance(value, dict):
+        return {str(key): _normalize_image_metadata(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_image_metadata(item) for item in value]
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    return str(value)
+
+
+def _serialize_image_metadata(image) -> str:
+    metadata = {
+        "info": _normalize_image_metadata(dict(image.info)),
+        "exif": _normalize_image_metadata(dict(image.getexif())),
+    }
+    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
 
 
 class UnsupportedFileTypeError(Exception):
@@ -129,7 +153,7 @@ class FileExtractionService:
                             if frames > 200:
                                 raise ValueError("Too many image frames")
                             extracted.segments.append(ExtractedSegmentPayload(
-                                location=name + " metadata", text=repr(image.info) + repr(dict(image.getexif()))))
+                                location=name + " metadata", text=_serialize_image_metadata(image)))
                             for index in range(frames):
                                 image.seek(index)
                                 buffer = io.BytesIO()
@@ -258,7 +282,7 @@ class FileExtractionService:
         visuals = []
         issues = []
         with Image.open(path) as image:
-            metadata = repr(dict(image.info)) + "\n" + repr(dict(image.getexif()))
+            metadata = _serialize_image_metadata(image)
             segments.append(ExtractedSegmentPayload(location="Image metadata", text=metadata))
             frames = getattr(image, "n_frames", 1)
             if frames > 200:

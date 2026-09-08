@@ -16,6 +16,8 @@ INPUT_SCANNER_IDS = (
 )
 
 BUSINESS_SENSITIVE_PROVIDER_IDS = ("ollama", "qwen", "bedrock")
+LEGACY_QWEN_BUSINESS_SENSITIVE_MODELS = {"deepseek-v4-flash"}
+DEFAULT_QWEN_BUSINESS_SENSITIVE_MODEL = "qwen3.8-flash"
 FILE_REVIEW_STORAGE_PROFILES = ("windows", "linux")
 
 
@@ -147,6 +149,8 @@ class SystemSettingService:
 
         model_record = self._get(self.BUSINESS_SENSITIVE_MODEL_KEY)
         model = (model_record.value if model_record is not None else "").strip()
+        if provider == "qwen" and model in LEGACY_QWEN_BUSINESS_SENSITIVE_MODELS:
+            model = DEFAULT_QWEN_BUSINESS_SENSITIVE_MODEL
         if not model:
             model = self.get_default_business_sensitive_model(provider)
 
@@ -155,6 +159,8 @@ class SystemSettingService:
     def set_business_sensitive_config(self, provider: str, model: str | None = None) -> dict[str, str]:
         normalized_provider = self._normalize_business_sensitive_provider(provider)
         normalized_model = (model or "").strip() or self.get_default_business_sensitive_model(normalized_provider)
+        if normalized_provider == "qwen" and normalized_model in LEGACY_QWEN_BUSINESS_SENSITIVE_MODELS:
+            normalized_model = DEFAULT_QWEN_BUSINESS_SENSITIVE_MODEL
         self._set(self.BUSINESS_SENSITIVE_PROVIDER_KEY, normalized_provider)
         self._set(self.BUSINESS_SENSITIVE_MODEL_KEY, normalized_model)
         self.db.commit()
@@ -171,7 +177,7 @@ class SystemSettingService:
             {
                 "provider": "qwen",
                 "model": self.get_default_business_sensitive_model("qwen"),
-                "label": "阿里云百炼 / deepseek-v4-flash",
+                "label": "阿里云百炼 / qwen3.8-flash",
                 "description": "OpenAI-compatible DashScope scanner runtime.",
             },
             {
@@ -185,7 +191,10 @@ class SystemSettingService:
     def get_default_business_sensitive_model(self, provider: str) -> str:
         normalized_provider = self._normalize_business_sensitive_provider(provider)
         if normalized_provider == "qwen":
-            return self.settings.business_sensitive_qwen_model or "deepseek-v4-flash"
+            configured_model = self.settings.business_sensitive_qwen_model.strip()
+            if not configured_model or configured_model in LEGACY_QWEN_BUSINESS_SENSITIVE_MODELS:
+                return DEFAULT_QWEN_BUSINESS_SENSITIVE_MODEL
+            return configured_model
         if normalized_provider == "bedrock":
             return self.settings.business_sensitive_bedrock_model or self.settings.bedrock_default_model
         return self.settings.business_sensitive_model or "qwen3.5:4b"

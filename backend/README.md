@@ -20,7 +20,7 @@ The backend provides:
 - Python `3.11`
 - uv
 - PostgreSQL 18
-- Ollama with `qwen3.5:4b` for default business-sensitive and file review; Business Sensitive can also be switched to Aliyun Bailian `deepseek-v4-flash`
+- Ollama with `qwen3.5:4b` for default business-sensitive and file review; Business Sensitive can also be switched to Aliyun Bailian `qwen3.8-flash`
 
 ## PostgreSQL Setup
 
@@ -67,6 +67,11 @@ FILE_REVIEW_ACTIVE_STORAGE_PROFILE=windows
 FILE_REVIEW_WINDOWS_STORAGE_PATH=./uploaded-documents
 FILE_REVIEW_LINUX_STORAGE_PATH=/var/lib/ai-security-gateway/uploaded-documents
 FILE_REVIEW_PER_USER_STORAGE_DIRS=true
+FILE_REVIEW_VISION_MODEL=qwen3.5:4b
+QWEN3GUARD_ENABLED=true
+QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-4B
+QWEN3GUARD_MODEL_PATH=
+QWEN3GUARD_DEVICE=auto
 ```
 
 The default admin is created only when `DEFAULT_ADMIN_PASSWORD` is non-empty and the configured username does not already exist.
@@ -81,7 +86,15 @@ uv run alembic upgrade head
 uv run python scripts/prepare_scanner_assets.py
 ```
 
-The asset preparation step downloads and validates the tokenizer during deployment/build preparation so Privacy Filter never downloads it in a user request.
+The asset preparation step downloads and validates the local token-counting encoder during deployment/build preparation. Privacy Filter uses its separately configured checkpoint and auto-download policy.
+
+The default Qwen3Guard model uses three BF16 weight shards totaling about 8.82 GB. Pre-download or resume them before starting the API:
+
+```powershell
+uv run python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Qwen/Qwen3Guard-Gen-4B', local_dir='.model-cache/qwen3guard/Qwen3Guard-Gen-4B')"
+```
+
+Verify that all three `model-0000x-of-00003.safetensors` files exist. This project currently installs the PyTorch CUDA 13.0 build, which requires an NVIDIA `580+` driver on Windows. For a lower-resource CPU fallback, use `Qwen/Qwen3Guard-Gen-0.6B`, set its completed local directory in `QWEN3GUARD_MODEL_PATH`, and set `QWEN3GUARD_DEVICE=cpu`.
 
 Verify warm scanner latency and the Qwen3Guard runtime device before deployment:
 

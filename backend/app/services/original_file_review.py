@@ -55,13 +55,22 @@ def review_original_document(document, business_reviewer, guardrails, enabled_sc
                     chunk["text"],
                     enabled_scanners=scanners,
                     db=db,
-                    strict_mode=True,
+                    # Preserve partial scanner results so a definitive block is
+                    # not hidden by a different scanner being unavailable. A
+                    # degraded clean result is still handled as unknown below.
+                    strict_mode=False,
                 )
             if checkpoints:
                 scan = checkpoints.run("privacy", chunk["location"], chunk["text"].encode(), evaluate_privacy,
                     lambda value: {name: getattr(value, name) for name in (
-                        "has_sensitive_data", "bancode_triggered", "prompt_injection_triggered", "ban_topics_triggered")},
-                    lambda value: SimpleNamespace(**value), lambda value: True)
+                        "has_sensitive_data", "bancode_triggered", "prompt_injection_triggered", "ban_topics_triggered",
+                        "degraded_scanners")},
+                    lambda value: SimpleNamespace(**value),
+                    lambda value: (
+                        value.has_sensitive_data or value.bancode_triggered
+                        or value.prompt_injection_triggered or value.ban_topics_triggered
+                        or not value.degraded_scanners
+                    ))
             else:
                 scan = evaluate_privacy()
         except Exception:
@@ -72,6 +81,9 @@ def review_original_document(document, business_reviewer, guardrails, enabled_sc
             result.review_decision = "block"
             result.summary = "Original file contains privacy or safety findings and cannot be sent unchanged."
             return result
+        if getattr(scan, "degraded_scanners", []):
+            result.review_decision = "unknown"
+            result.failed_locations.append(chunk["location"])
     if not document.coverage_complete:
         result.review_decision = "unknown"
         result.failed_locations.extend(document.coverage_issues or ["Original content coverage is not verified."])

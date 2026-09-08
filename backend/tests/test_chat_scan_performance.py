@@ -296,6 +296,18 @@ def test_runtime_strict_mode_override_controls_fail_closed_behavior():
     assert result.scanner_timings["privacy_filter"]["status"] == "error"
 
 
+def test_privacy_filter_recovers_after_checkpoint_is_installed():
+    service = GuardrailService.__new__(GuardrailService)
+    service._privacy_filter_scanner = None
+    recovered = SimpleNamespace(scan=lambda text: [{"original": text}])
+    builds = []
+    service._build_privacy_filter_scanner = lambda: builds.append(True) or recovered
+
+    assert service._scan_privacy_filter_or_raise("private") == [{"original": "private"}]
+    assert service._scan_privacy_filter_or_raise("again") == [{"original": "again"}]
+    assert builds == [True]
+
+
 def test_default_scan_deadline_allows_business_sensitive_timeout_to_finish():
     settings = Settings(_env_file=None)
 

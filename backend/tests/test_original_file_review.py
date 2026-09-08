@@ -27,7 +27,9 @@ def run_review(*, complete=True, private=False, failure=False, enabled=None):
 def test_complete_original_requires_business_and_privacy_review():
     result, guard = run_review()
     assert result.review_decision == "allow"
-    assert guard.scan_text.call_args.kwargs["strict_mode"] is True
+    # The original-file layer evaluates degraded_scanners itself so definite
+    # findings can still block while degraded clean scans remain unknown.
+    assert guard.scan_text.call_args.kwargs["strict_mode"] is False
     assert guard.scan_text.call_args.kwargs["enabled_scanners"] == ["custom_regex"]
 
 
