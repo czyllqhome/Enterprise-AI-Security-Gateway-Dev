@@ -69,13 +69,16 @@ class Settings(BaseSettings):
         default=str(PROJECT_ROOT / ".model-cache"),
         alias="LOCAL_MODEL_CACHE_DIR",
     )
+    # Deployment-wide device policy for local model scanners. Individual scanner
+    # settings can use "inherit" or override this with auto/cpu/cuda.
+    local_model_device: str = Field(default="auto", alias="LOCAL_MODEL_DEVICE")
     privacy_filter_enabled: bool = Field(default=True, alias="PRIVACY_FILTER_ENABLED")
     privacy_filter_model_path: str = Field(
         default=str(BASE_DIR / ".model-cache" / "openai-privacy-filter"),
         alias="PRIVACY_FILTER_MODEL_PATH",
     )
     privacy_filter_auto_download: bool = Field(default=False, alias="PRIVACY_FILTER_AUTO_DOWNLOAD")
-    privacy_filter_device: str = Field(default="cpu", alias="PRIVACY_FILTER_DEVICE")
+    privacy_filter_device: str = Field(default="inherit", alias="PRIVACY_FILTER_DEVICE")
     privacy_filter_decode_mode: str = Field(default="viterbi", alias="PRIVACY_FILTER_DECODE_MODE")
     privacy_filter_output_mode: str = Field(default="typed", alias="PRIVACY_FILTER_OUTPUT_MODE")
     privacy_filter_context_window_length: int = Field(default=0, alias="PRIVACY_FILTER_CONTEXT_WINDOW_LENGTH")
@@ -121,6 +124,8 @@ class Settings(BaseSettings):
     file_review_job_max_attempts: int = Field(default=3, alias="FILE_REVIEW_JOB_MAX_ATTEMPTS")
     file_review_chunk_workers: int = Field(default=4, alias="FILE_REVIEW_CHUNK_WORKERS")
     file_review_max_chunks: int = Field(default=40, alias="FILE_REVIEW_MAX_CHUNKS")
+    file_review_chunk_char_limit: int = Field(default=12000, alias="FILE_REVIEW_CHUNK_CHAR_LIMIT")
+    file_review_chunk_overlap_chars: int = Field(default=500, alias="FILE_REVIEW_CHUNK_OVERLAP_CHARS")
     file_review_default_storage_path: str = Field(
         default=str(BASE_DIR / "uploaded-documents"),
         alias="FILE_REVIEW_DEFAULT_STORAGE_PATH",
@@ -147,12 +152,11 @@ class Settings(BaseSettings):
     )
     file_ocr_rec_model_dir: str = Field(default="", alias="FILE_OCR_REC_MODEL_DIR")
     file_ocr_cls_model_dir: str = Field(default="", alias="FILE_OCR_CLS_MODEL_DIR")
+    file_ocr_device: str = Field(default="inherit", alias="FILE_OCR_DEVICE")
     qwen3guard_enabled: bool = Field(default=True, alias="QWEN3GUARD_ENABLED")
     qwen3guard_model: str = Field(default=DEFAULT_QWEN3GUARD_MODEL, alias="QWEN3GUARD_MODEL")
     qwen3guard_model_path: str = Field(default="", alias="QWEN3GUARD_MODEL_PATH")
-    # Auto keeps local review available on CPU-only developer machines while
-    # still selecting CUDA when the runtime can actually use it.
-    qwen3guard_device: str = Field(default="auto", alias="QWEN3GUARD_DEVICE")
+    qwen3guard_device: str = Field(default="inherit", alias="QWEN3GUARD_DEVICE")
     qwen3guard_max_new_tokens: int = Field(default=48, alias="QWEN3GUARD_MAX_NEW_TOKENS")
     qwen3guard_timeout_ms: int = Field(default=1200, alias="QWEN3GUARD_TIMEOUT_MS")
     qwen3guard_workers: int = Field(default=1, alias="QWEN3GUARD_WORKERS")

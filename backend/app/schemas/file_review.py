@@ -40,7 +40,7 @@ class FileReviewHit(BaseModel):
 
 class FileReviewResult(BaseModel):
     # Legacy records have no proof of complete review and must be re-reviewed.
-    review_decision: Literal["allow", "block", "unknown"] = "unknown"
+    review_decision: Literal["allow", "needs_confirmation", "block", "unknown"] = "unknown"
     total_chunks: int = 0
     reviewed_chunks: int = 0
     failed_locations: list[str] = Field(default_factory=list)
@@ -75,6 +75,7 @@ class UploadedFileResponse(BaseModel):
     extracted_text: str | None
     extracted_segments: list[ExtractedSegment]
     review_result: FileReviewResult | None
+    review_fingerprint: str | None = None
     error_message: str | None
     created_at: datetime
     updated_at: datetime
@@ -88,7 +89,7 @@ class FileReviewStatusResponse(BaseModel):
     id: int
     status: str
     phase: str
-    review_decision: Literal["allow", "block", "unknown"]
+    review_decision: Literal["allow", "needs_confirmation", "block", "unknown"]
     total_chunks: int = 0
     reviewed_chunks: int = 0
     total_visual_units: int = 0

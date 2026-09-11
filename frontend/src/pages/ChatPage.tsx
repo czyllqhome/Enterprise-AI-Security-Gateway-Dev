@@ -2,7 +2,7 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "re
 import { CheckCircle2, FileText, LoaderCircle, LogOut, MessageSquarePlus, Paperclip, Send, ShieldAlert, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { apiFetch, apiStream } from "../api/client";
-import type { ChatPreview, ChatSession, ChatSessionDetail, GuardrailEntity, Message, Provider, UploadedFile } from "../api/types";
+import type { BusinessSensitiveFinding, ChatPreview, ChatSession, ChatSessionDetail, GuardrailEntity, Message, Provider, UploadedFile } from "../api/types";
 import { useAuth } from "../state/AuthContext";
 import { formatDateTime, messageText } from "../utils/format";
 
@@ -139,6 +139,8 @@ export function ChatPage() {
   const [preview, setPreview] = useState<ChatPreview | null>(null);
   const [attachment, setAttachment] = useState<UploadedFile | null>(null);
   const [attachmentName, setAttachmentName] = useState("");
+  const [attachmentNoticeOpen, setAttachmentNoticeOpen] = useState(false);
+  const [acknowledgedAttachmentReview, setAcknowledgedAttachmentReview] = useState<string | null>(null);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [loading, setLoading] = useState(false);
   const [streamingReply, setStreamingReply] = useState("");
@@ -176,6 +178,7 @@ export function ChatPage() {
           setAttachment(latest);
           setStatus(latest.status === "failed" ? latest.error_message || "附件审核失败。"
             : latest.review_result?.review_decision === "allow" ? "附件审核通过，可以发送原文件。"
+            : latest.review_result?.review_decision === "needs_confirmation" ? "附件包含中风险商务敏感内容，需要确认后发送。"
             : latest.review_result?.review_decision === "block" ? "附件被安全策略阻断。"
             : "附件审核未完成，可查看详情或重试。");
         }
@@ -187,6 +190,12 @@ export function ChatPage() {
     }, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [attachment?.id, attachment?.status]);
+
+  useEffect(() => {
+    if (attachment?.status === "completed" && attachment.review_result?.contains_business_sensitive) {
+      setAttachmentNoticeOpen(true);
+    }
+  }, [attachment?.id, attachment?.review_fingerprint, attachment?.status]);
 
   async function retryAttachmentReview() {
     if (!attachment) return;
@@ -291,11 +300,22 @@ export function ChatPage() {
       });
       if (result.status === "blocked") {
         setPendingUserMessage(null);
+        if (result.business_sensitive_findings?.length) {
+          setPreview(result);
+        }
         setStatus(result.blocked_reason || "请求已被安全策略拦截。");
         return;
       }
       if (result.status === "needs_confirmation") {
         setPendingUserMessage(null);
+        const attachmentOnly = result.business_sensitive_findings?.length > 0
+          && result.business_sensitive_findings.every((finding) => finding.source === "attachment")
+          && !result.has_sensitive_data
+          && !result.business_sensitive_result.contains_business_sensitive;
+        if (attachmentOnly && acknowledgedAttachmentReview === attachment?.review_fingerprint) {
+          await confirmSend(result, sessionId);
+          return;
+        }
         setPreview(result);
         setStatus(`检测到敏感内容，请确认脱敏版本。扫描耗时 ${Math.round(result.scan_duration_ms)}ms。`);
         return;
@@ -449,6 +469,8 @@ export function ChatPage() {
     }
 
     setAttachment(null);
+    setAttachmentNoticeOpen(false);
+    setAcknowledgedAttachmentReview(null);
     setAttachmentName(file.name);
     setUploadingAttachment(true);
     setStatus(`正在上传附件 ${file.name}...`);
@@ -473,6 +495,8 @@ export function ChatPage() {
   function clearAttachment() {
     setAttachment(null);
     setAttachmentName("");
+    setAttachmentNoticeOpen(false);
+    setAcknowledgedAttachmentReview(null);
   }
 
   function attachmentStatusText() {
@@ -498,7 +522,55 @@ export function ChatPage() {
     if (!attachmentName) {
       return true;
     }
-    return attachment?.status === "completed" && attachment.review_result?.review_decision === "allow" && !isHighRiskAttachment(attachment);
+    if (attachment?.status !== "completed" || !attachment.review_result) return false;
+    if (attachment.review_result.review_decision === "allow") return true;
+    return attachment.review_result.review_decision === "needs_confirmation"
+      && acknowledgedAttachmentReview === attachment.review_fingerprint;
+  }
+
+  const previewBusinessFindings: BusinessSensitiveFinding[] = preview?.business_sensitive_findings?.length
+    ? preview.business_sensitive_findings
+    : preview?.business_sensitive_result?.contains_business_sensitive
+      ? [{ source: "prompt", result: preview.business_sensitive_result }]
+      : [];
+
+  const attachmentNoticeFindings: BusinessSensitiveFinding[] = attachment?.review_result?.contains_business_sensitive
+    ? [{
+        source: "attachment",
+        file_id: attachment.id,
+        filename: attachment.original_filename,
+        result: {
+          contains_business_sensitive: true,
+          risk_level: attachment.review_result.risk_level,
+          summary: attachment.review_result.summary,
+          confidence: attachment.review_result.confidence,
+          categories: attachment.review_result.hits?.map((hit) => ({
+            name: hit.category, reason: hit.reason, matched_text: hit.matched_text,
+          })),
+        },
+      }]
+    : [];
+
+  const activeBusinessFindings = previewBusinessFindings.length
+    ? previewBusinessFindings
+    : attachmentNoticeOpen ? attachmentNoticeFindings : [];
+  const businessNoticeBlocked = preview?.status === "blocked"
+    || activeBusinessFindings.some((finding) => finding.result.risk_level === "high");
+
+  function closeBusinessNotice() {
+    if (previewBusinessFindings.length) setPreview(null);
+    setAttachmentNoticeOpen(false);
+  }
+
+  function acceptBusinessNotice() {
+    if (preview?.status === "needs_confirmation") {
+      confirmSend(preview);
+      return;
+    }
+    if (attachment?.review_fingerprint) {
+      setAcknowledgedAttachmentReview(attachment.review_fingerprint);
+    }
+    setAttachmentNoticeOpen(false);
   }
 
   function attachmentPreviewText() {
@@ -616,7 +688,50 @@ export function ChatPage() {
           {!selected && !pendingUserMessage ? <p className="empty-state">创建会话后即可开始。</p> : null}
         </div>
 
-        {preview ? (
+        {activeBusinessFindings.length ? (
+          <div className="business-modal-backdrop" role="presentation">
+            <section className="business-modal" role="dialog" aria-modal="true" aria-labelledby="business-modal-title">
+              <div className="business-modal-head">
+                <ShieldAlert size={22} />
+                <div>
+                  <p className="eyebrow">Business Sensitive</p>
+                  <h2 id="business-modal-title">{businessNoticeBlocked ? "商业敏感内容已阻断" : "发现商业敏感内容"}</h2>
+                </div>
+              </div>
+              <div className="business-modal-findings">
+                {activeBusinessFindings.map((finding, index) => (
+                  <article key={`${finding.source}-${finding.file_id ?? index}`}>
+                    <div className="business-modal-meta">
+                      <strong>{finding.source === "attachment" ? finding.filename || "上传附件" : "聊天内容"}</strong>
+                      <span className={`risk-${finding.result.risk_level}`}>{finding.result.risk_level} risk</span>
+                    </div>
+                    <p>{finding.result.summary || "检测到商务敏感内容。"}</p>
+                    {finding.result.categories?.length ? (
+                      <ul>
+                        {finding.result.categories.map((category, categoryIndex) => (
+                          <li key={`${category.name}-${categoryIndex}`}>
+                            <strong>{category.name?.replace(/_/g, " ")}</strong>
+                            {category.reason ? `：${category.reason}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+              <div className="business-modal-actions">
+                <button className="secondary-btn" type="button" onClick={closeBusinessNotice}>返回修改</button>
+                {!businessNoticeBlocked ? (
+                  <button className="primary-btn" type="button" disabled={loading} onClick={acceptBusinessNotice}>
+                    确认继续发送
+                  </button>
+                ) : null}
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {preview && !previewBusinessFindings.length ? (
           <section className="review-panel">
             <div className="review-header">
               <div>
@@ -732,7 +847,7 @@ export function ChatPage() {
                 ref={attachmentInputRef}
                 className="visually-hidden"
                 type="file"
-                accept=".doc,.docx,.xlsx,.pptx,.pdf,.png,.jpg,.jpeg,.bmp,.webp"
+                accept=".docx,.xlsx,.pptx,.pdf,.png,.jpg,.jpeg,.bmp,.webp"
                 onChange={handleAttachmentChange}
               />
               <button

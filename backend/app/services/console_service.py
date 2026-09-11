@@ -240,8 +240,10 @@ class ConsoleService:
 
     def update_business_sensitive_config(self, provider: str, model: str | None = None) -> ConsoleScannersResponse:
         self.setting_service.set_business_sensitive_config(provider=provider, model=model)
-        get_guardrail_service.cache_clear()
-        self.guardrail_service = get_guardrail_service()
+        # The business-sensitive scanner resolves its runtime from the database on each request and
+        # caches clients by runtime configuration. Rebuilding the entire guardrail service here also
+        # reloads local Privacy Filter and Qwen3Guard models, turning a settings save into a long,
+        # unnecessary blocking operation.
         return self.get_scanners()
 
     def get_last_scan(self) -> LastScanResponse:
@@ -799,7 +801,11 @@ class ConsoleService:
                 )
             )
 
-        for log in logs[:5]:
+        confirmed_review_logs = [
+            log for log in logs
+            if log.decision == "review" and log.message_id is not None
+        ]
+        for log in confirmed_review_logs[:5]:
             incidents.append(
                 DashboardIncidentItem(
                     channel="audit",

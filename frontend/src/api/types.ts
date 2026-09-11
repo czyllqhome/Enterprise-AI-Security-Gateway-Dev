@@ -66,6 +66,13 @@ export type BusinessSensitiveResult = {
   confidence?: number;
 };
 
+export type BusinessSensitiveFinding = {
+  source: "prompt" | "attachment" | string;
+  file_id?: number | null;
+  filename?: string | null;
+  result: BusinessSensitiveResult;
+};
+
 export type ChatPreview = {
   snapshot_id: string | null;
   scan_event_id: number | null;
@@ -83,6 +90,7 @@ export type ChatPreview = {
   enabled_scanners: string[];
   entity_types: string[];
   business_sensitive_result: BusinessSensitiveResult;
+  business_sensitive_findings: BusinessSensitiveFinding[];
   scan_proof: string | null;
   proof_expires_at: string | null;
   degraded_scanners: string[];
@@ -104,14 +112,19 @@ export type UploadedFile = {
   extracted_text: string | null;
   extracted_segments: ExtractedSegment[];
   review_result: {
-    review_decision: "allow" | "block" | "unknown";
+    review_decision: "allow" | "needs_confirmation" | "block" | "unknown";
     total_chunks: number;
     reviewed_chunks: number;
     failed_locations: string[];
     contains_business_sensitive: boolean;
     risk_level: "low" | "medium" | "high" | string;
     summary: string;
+    confidence?: number;
+    categories?: string[];
+    hits?: Array<{ category: string; risk_level: string; reason: string; matched_text: string; location: string }>;
+    model?: string;
   } | null;
+  review_fingerprint: string | null;
   error_message: string | null;
   created_at: string;
   updated_at: string;
@@ -158,14 +171,14 @@ export type Scanner = {
 };
 
 export type BusinessSensitiveScannerOption = {
-  provider: "ollama" | "qwen" | "bedrock";
+  provider: "ollama" | "qwen" | "openrouter" | "bedrock";
   model: string;
   label: string;
   description: string;
 };
 
 export type BusinessSensitiveScannerConfig = {
-  provider: "ollama" | "qwen" | "bedrock";
+  provider: "ollama" | "qwen" | "openrouter" | "bedrock";
   model: string;
   options: BusinessSensitiveScannerOption[];
   configured: boolean;
@@ -183,7 +196,9 @@ export type LogEntry = {
   id: number;
   session_id: number | null;
   message_id: number | null;
+  scan_event_id: number | null;
   username: string;
+  decision: "allowed" | "review" | "blocked";
   sanitized_content: string;
   detected_entity_types: string[] | null;
   created_at: string;

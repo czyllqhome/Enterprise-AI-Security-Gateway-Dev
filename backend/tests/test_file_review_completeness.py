@@ -47,22 +47,28 @@ def document(*texts):
     ])
 
 
-def test_scans_beyond_eightieth_chunk():
+def test_document_over_configured_chunk_limit_fails_closed():
     prompts = []
 
     def generate(prompt):
         prompts.append(prompt)
         return clean_response()
 
-    result = scanner_with(generate).review(document(*[str(i) + "x" * 1000 for i in range(81)]))
-    assert result.review_decision == "allow"
-    assert result.total_chunks == result.reviewed_chunks == len(prompts)
-    assert any("Page 81" in prompt for prompt in prompts)
+    scanner = scanner_with(generate)
+    scanner.chunk_char_limit = 1000
+    scanner.chunk_overlap_chars = 0
+    scanner.max_chunks = 40
+    result = scanner.review(document(*[str(i) + "x" * 1000 for i in range(41)]))
+    assert result.review_decision == "unknown"
+    assert result.total_chunks > 40
+    assert prompts == []
 
 
 def test_long_segment_keeps_tail_and_overlapping_boundaries():
     text = "x" * 950 + "boundary-sensitive-marker" + "y" * 7000 + "TAIL_EVIDENCE"
     scanner = scanner_with(lambda _: clean_response())
+    scanner.chunk_char_limit = 1000
+    scanner.chunk_overlap_chars = 100
     chunks = scanner._build_review_chunks(document(text).segments)
     assert all(len(chunk["text"]) <= 1000 for chunk in chunks)
     assert "TAIL_EVIDENCE" in chunks[-1]["text"]
@@ -87,7 +93,10 @@ def test_timeout_does_not_erase_other_chunk_results():
             raise TimeoutError("test")
         return clean_response()
 
-    result = scanner_with(generate).review(document("a" * 1000, "b" * 1000))
+    scanner = scanner_with(generate)
+    scanner.chunk_char_limit = 1000
+    scanner.chunk_overlap_chars = 0
+    result = scanner.review(document("a" * 1000, "b" * 1000))
     assert result.review_decision == "unknown"
     assert result.total_chunks == 2
     assert result.reviewed_chunks == 1
@@ -114,7 +123,7 @@ def test_positive_verdict_without_evidence_is_unknown():
     assert result.reviewed_chunks == 0
 
 
-def test_medium_business_sensitive_content_blocks_unchanged_original():
+def test_medium_business_sensitive_content_requires_confirmation():
     response = SimpleNamespace(raw_text=json.dumps({
         "contains_business_sensitive": True,
         "risk_level": "medium",
@@ -133,4 +142,4 @@ def test_medium_business_sensitive_content_blocks_unchanged_original():
 
     assert result.contains_business_sensitive is True
     assert result.risk_level == "medium"
-    assert result.review_decision == "block"
+    assert result.review_decision == "needs_confirmation"

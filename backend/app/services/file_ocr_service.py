@@ -5,6 +5,7 @@ import tarfile
 from pathlib import Path
 
 from ..core.config import get_settings
+from ..core.local_model_device import resolve_local_model_device
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,11 @@ class FileOCRService:
         self._ocr_engine = None
         self._load_error: Exception | None = None
         self.settings = get_settings()
+        self.device = self._resolve_device(resolve_local_model_device(
+            self.settings.local_model_device,
+            self.settings.file_ocr_device,
+            setting_name="FILE_OCR_DEVICE",
+        ))
 
     def image_to_text(self, image_path: str | Path) -> str:
         engine = self._get_engine()
@@ -106,11 +112,27 @@ class FileOCRService:
     def _create_engine(self, paddle_ocr, det_model_dir: str, rec_model_dir: str, cls_model_dir: str):
         return paddle_ocr(
             use_angle_cls=True,
+            use_gpu=self.device == "cuda",
             lang="ch",
             det_model_dir=det_model_dir,
             rec_model_dir=rec_model_dir,
             cls_model_dir=cls_model_dir,
         )
+
+    @staticmethod
+    def _resolve_device(value: str) -> str:
+        normalized = (value or "auto").strip().lower()
+        if normalized != "cuda":
+            # PaddleOCR remains on CPU in auto mode so a CPU-only paddlepaddle
+            # package can coexist with a CUDA-enabled PyTorch installation.
+            return "cpu"
+        try:
+            import paddle
+        except Exception as exc:
+            raise RuntimeError("File OCR requires a CUDA-capable PaddlePaddle runtime.") from exc
+        if not paddle.is_compiled_with_cuda():
+            raise RuntimeError("File OCR requires CUDA but PaddlePaddle was built without CUDA support.")
+        return "cuda"
 
     def _resolve_model_dir(self, raw_value: str, fallback: Path) -> str:
         candidate = (raw_value or "").strip()

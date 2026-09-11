@@ -11,14 +11,15 @@ def sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def review_policy_hash(enabled_scanners: list[str]) -> str:
+def review_policy_hash(enabled_scanners: list[str], business_config: dict[str, str] | None = None) -> str:
     settings = get_settings()
     # Includes model/threshold/cache configuration; only the hash is persisted.
     config = settings.model_dump(mode="json")
     relevant = {k: v for k, v in config.items() if k.startswith((
         "file_review_", "file_ocr_", "privacy_filter_", "qwen3guard_", "business_sensitive_",
     ))}
-    return sha256(json.dumps({"version": 2, "scanners": sorted(enabled_scanners), "config": relevant},
+    return sha256(json.dumps({"version": 3, "scanners": sorted(enabled_scanners), "config": relevant,
+                              "business_runtime": business_config or {}},
                              sort_keys=True, ensure_ascii=True).encode())
 
 
@@ -26,9 +27,7 @@ def verify_mime(filename: str, content: bytes) -> str:
     """Validate the original container, never convert or rewrite its bytes."""
     extension = Path(filename).suffix.lower()
     if extension == ".doc":
-        if not content.startswith(bytes.fromhex("D0CF11E0A1B11AE1")):
-            raise ValueError("Unreadable legacy Word file.")
-        return "application/msword"
+        raise ValueError("Legacy .doc files are not supported. Save the document as .docx or PDF and upload it again.")
     if extension == ".pdf":
         import fitz
         try:

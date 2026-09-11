@@ -1,46 +1,20 @@
 """Combine business review and strict privacy/safety checks, without modifying the original."""
 
 from .file_review_scanner import FileReviewScanner
-from .file_vision_review import FileVisionReviewer, VisualReviewResult
 from ..schemas.file_review import FileReviewResult
-from ..schemas.file_review_runtime import ExtractedSegmentPayload
-from dataclasses import replace
 from types import SimpleNamespace
 
 
-def review_original_document(document, business_reviewer, guardrails, enabled_scanners, db, visual_reviewer=None, checkpoints=None):
-    visual_reviewer = visual_reviewer or FileVisionReviewer()
-    segments = list(document.segments)
-    visual_failures = []
-    visual_successes = 0
-    for unit in document.visual_units:
-        try:
-            if checkpoints:
-                verdict = checkpoints.run("visual", unit.location, unit.image_bytes,
-                    lambda: visual_reviewer.review(unit), lambda value: value.model_dump(),
-                    VisualReviewResult.model_validate, lambda value: value.decision in {"allow", "block"})
-            else:
-                verdict = visual_reviewer.review(unit)
-        except Exception:
-            visual_failures.append(unit.location)
-            continue
-        if verdict.decision == "block":
-            return FileReviewResult(review_decision="block", summary=verdict.reason,
-                                    total_visual_units=len(document.visual_units),
-                                    reviewed_visual_units=visual_successes + 1)
-        if verdict.decision != "allow":
-            visual_failures.append(unit.location)
-            continue
-        visual_successes += 1
-        segments.append(ExtractedSegmentPayload(location=unit.location + " visual review",
-            text=verdict.visible_text + "\n" + verdict.description, source_kind="visual_review"))
-    document = replace(document, segments=segments)
+def review_original_document(
+    document, business_reviewer, guardrails, enabled_scanners, db, visual_reviewer=None,
+    checkpoints=None, business_result: FileReviewResult | None = None,
+):
+    # visual_reviewer remains in the signature for compatibility but the optimized
+    # pipeline never invokes a per-page vision model.
     if checkpoints:
         business_reviewer.checkpoint_store = checkpoints
-    result = business_reviewer.review(document)
-    result.total_visual_units = len(document.visual_units)
-    result.reviewed_visual_units = visual_successes
-    if result.review_decision == "block":
+    result = business_result or business_reviewer.review(document)
+    if result.review_decision != "allow":
         return result
     # Business review already runs through the dedicated, strict file reviewer.
     scanners = [name for name in enabled_scanners if name not in {"business_sensitive", "deanonymize"}]
@@ -87,9 +61,6 @@ def review_original_document(document, business_reviewer, guardrails, enabled_sc
     if not document.coverage_complete:
         result.review_decision = "unknown"
         result.failed_locations.extend(document.coverage_issues or ["Original content coverage is not verified."])
-    if visual_failures:
-        result.review_decision = "unknown"
-        result.failed_locations.extend(visual_failures)
     if result.review_decision == "unknown":
         result.summary = "Original-file review is incomplete; no original file may be transmitted."
     return result

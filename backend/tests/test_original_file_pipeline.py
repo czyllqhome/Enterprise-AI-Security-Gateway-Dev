@@ -21,6 +21,7 @@ def test_review_proof_is_bound_to_original_bytes(db_session, tmp_path, monkeypat
     scanner = FileReviewScanner.__new__(FileReviewScanner)
     scanner.enabled = True
     scanner.model = "test"
+    scanner.runtime = SimpleNamespace(provider="ollama")
     scanner.client = SimpleNamespace(generate=lambda _: SimpleNamespace(raw_text=json.dumps({
         "contains_business_sensitive": False, "risk_level": "low", "summary": "Public text",
         "confidence": 0.9, "categories": [],
@@ -28,7 +29,7 @@ def test_review_proof_is_bound_to_original_bytes(db_session, tmp_path, monkeypat
     guard = SimpleNamespace(scan_text=lambda text, **kwargs: GuardrailScanResult(
         original_text=text, sanitized_text=text, has_sensitive_data=False, entities=[],
     ))
-    monkeypatch.setattr("app.services.file_review_service.FileReviewScanner", lambda: scanner)
+    monkeypatch.setattr("app.services.file_review_service.FileReviewScanner", lambda *_args, **_kwargs: scanner)
     monkeypatch.setattr("app.services.guardrails.llm_guard_service.get_guardrail_service", lambda: guard)
     factory = sessionmaker(bind=db_session.get_bind())
     monkeypatch.setattr("app.services.file_review_service.SessionLocal", factory)
@@ -60,7 +61,6 @@ def test_mixed_pdf_is_not_certified_by_native_text_alone(tmp_path):
         document.save(path)
     ocr = SimpleNamespace(image_to_text=Mock(return_value="More text"))
     extracted = FileExtractionService(ocr).extract(path)
-    assert len(extracted.visual_units) == 1
-    assert extracted.visual_units[0].location == "Page 1"
+    assert extracted.visual_units == []
     ocr.image_to_text.assert_called_once()
     assert "Public heading" in extracted.plain_text and "More text" in extracted.plain_text

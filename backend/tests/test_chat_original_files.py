@@ -27,7 +27,10 @@ def chat(db_session, tmp_path, monkeypatch):
     record.storage_path = str(path)
     identity = AttachmentIdentity(file_id=record.id, owner_user_id=user.id, sha256=sha256(content),
         verified_mime="application/pdf", reviewed_sha256=sha256(content), decision="allow",
-        review_policy=review_policy_hash(SystemSettingService(db_session).get_enabled_scanners()))
+        review_policy=review_policy_hash(
+            SystemSettingService(db_session).get_enabled_scanners(),
+            SystemSettingService(db_session).get_business_sensitive_config(),
+        ))
     db_session.add(identity)
     db_session.commit()
     scans = []
@@ -124,6 +127,35 @@ def test_review_revocation_between_preview_and_confirm_blocks_send(chat):
     with pytest.raises(GuardrailViolationError, match="review policy"):
         chat.service.confirm_message(request, "alice")
     chat.model.chat.assert_not_called()
+
+
+def test_medium_attachment_requires_bound_confirmation(chat):
+    chat.identity.decision = "needs_confirmation"
+    chat.record.review_result_json = {
+        "review_decision": "needs_confirmation",
+        "contains_business_sensitive": True,
+        "risk_level": "medium",
+        "summary": "附件包含未公开报价。",
+        "confidence": 0.93,
+        "hits": [{
+            "category": "pricing",
+            "matched_text": "报价 100 万",
+            "reason": "未公开内部报价",
+            "location": "Page 1",
+        }],
+        "model": "qwen/qwen3.8-flash",
+    }
+    chat.db.commit()
+
+    result = preview(chat)
+    assert result.status == "needs_confirmation"
+    assert result.business_sensitive_findings[0].source == "attachment"
+    assert result.business_sensitive_findings[0].file_id == chat.record.id
+    assert result.business_sensitive_findings[0].result.summary == "附件包含未公开报价。"
+    chat.model.chat.assert_not_called()
+
+    chat.service.confirm_message(confirmation(result), "alice")
+    assert chat.model.chat.call_count == 1
 
 
 def test_model_failure_consumes_snapshot_and_does_not_retry(chat):

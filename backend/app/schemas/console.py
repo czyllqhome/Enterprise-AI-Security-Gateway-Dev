@@ -33,14 +33,14 @@ class ScannerStatus(BaseModel):
 
 
 class BusinessSensitiveScannerOption(BaseModel):
-    provider: Literal["ollama", "qwen", "bedrock"]
+    provider: Literal["ollama", "qwen", "openrouter", "bedrock"]
     model: str
     label: str
     description: str
 
 
 class BusinessSensitiveScannerConfig(BaseModel):
-    provider: Literal["ollama", "qwen", "bedrock"]
+    provider: Literal["ollama", "qwen", "openrouter", "bedrock"]
     model: str
     options: list[BusinessSensitiveScannerOption]
     configured: bool
@@ -60,7 +60,7 @@ class ConsoleScannersUpdateRequest(BaseModel):
 
 
 class BusinessSensitiveScannerConfigUpdateRequest(BaseModel):
-    provider: Literal["ollama", "qwen", "bedrock"]
+    provider: Literal["ollama", "qwen", "openrouter", "bedrock"]
     model: str | None = None
 
 

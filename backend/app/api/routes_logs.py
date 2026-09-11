@@ -1,3 +1,5 @@
+from typing import Literal
+
 from sqlalchemy.orm import Session
 
 from fastapi import APIRouter, Depends, Query
@@ -14,9 +16,10 @@ router = APIRouter(prefix="/api/logs", tags=["logs"])
 
 @router.get("", response_model=list[LogEntryResponse])
 def list_logs(
+    decision: Literal["allowed", "review", "blocked"] | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> list[LogEntryResponse]:
-    return LogService(db).list_logs(limit=limit, offset=offset)
+    return LogService(db).list_logs(decision=decision, limit=limit, offset=offset)

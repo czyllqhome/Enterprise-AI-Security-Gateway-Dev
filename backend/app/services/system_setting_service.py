@@ -15,7 +15,7 @@ INPUT_SCANNER_IDS = (
     "custom_regex",
 )
 
-BUSINESS_SENSITIVE_PROVIDER_IDS = ("ollama", "qwen", "bedrock")
+BUSINESS_SENSITIVE_PROVIDER_IDS = ("ollama", "qwen", "openrouter", "bedrock")
 LEGACY_QWEN_BUSINESS_SENSITIVE_MODELS = {"deepseek-v4-flash"}
 DEFAULT_QWEN_BUSINESS_SENSITIVE_MODEL = "qwen3.8-flash"
 FILE_REVIEW_STORAGE_PROFILES = ("windows", "linux")
@@ -181,6 +181,12 @@ class SystemSettingService:
                 "description": "OpenAI-compatible DashScope scanner runtime.",
             },
             {
+                "provider": "openrouter",
+                "model": self.get_default_business_sensitive_model("openrouter"),
+                "label": "OpenRouter / qwen/qwen3.8-flash",
+                "description": "OpenRouter multimodal runtime for text, image, and PDF review.",
+            },
+            {
                 "provider": "bedrock",
                 "model": self.get_default_business_sensitive_model("bedrock"),
                 "label": "AWS Bedrock",
@@ -197,6 +203,8 @@ class SystemSettingService:
             return configured_model
         if normalized_provider == "bedrock":
             return self.settings.business_sensitive_bedrock_model or self.settings.bedrock_default_model
+        if normalized_provider == "openrouter":
+            return "qwen/qwen3.8-flash"
         return self.settings.business_sensitive_model or "qwen3.5:4b"
 
     def validate_enabled_scanners(self, scanner_ids: list[str]) -> list[str]:

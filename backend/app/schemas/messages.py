@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +35,13 @@ class ChatPreviewRequest(BaseModel):
     username: str | None = None
 
 
+class BusinessSensitiveFinding(BaseModel):
+    source: Literal["prompt", "attachment"]
+    file_id: int | None = None
+    filename: str | None = None
+    result: BusinessSensitiveResult
+
+
 class ChatPreviewResponse(BaseModel):
     snapshot_id: str | None = None
     scan_event_id: int | None = None
@@ -53,6 +61,7 @@ class ChatPreviewResponse(BaseModel):
     enabled_scanners: list[str]
     entity_types: list[str]
     business_sensitive_result: BusinessSensitiveResult
+    business_sensitive_findings: list[BusinessSensitiveFinding] = Field(default_factory=list)
     scan_proof: str | None = None
     proof_expires_at: datetime | None = None
     degraded_scanners: list[str] = Field(default_factory=list)

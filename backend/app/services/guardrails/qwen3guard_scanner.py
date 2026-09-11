@@ -9,6 +9,7 @@ from importlib.util import find_spec
 from pathlib import Path
 
 from ...core.config import get_settings
+from ...core.local_model_device import resolve_local_model_device
 from ...core.model_cache import configure_local_model_cache
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,11 @@ class Qwen3GuardScanner:
         self.enabled = settings.qwen3guard_enabled
         self.model_name = settings.qwen3guard_model
         self.model_path = settings.qwen3guard_model_path.strip()
-        self.device = settings.qwen3guard_device
+        self.device = resolve_local_model_device(
+            settings.local_model_device,
+            settings.qwen3guard_device,
+            setting_name="QWEN3GUARD_DEVICE",
+        )
         self.max_new_tokens = settings.qwen3guard_max_new_tokens
         self.local_model_cache_dir = configure_local_model_cache()
         self.model_reference = self._ensure_model_reference()

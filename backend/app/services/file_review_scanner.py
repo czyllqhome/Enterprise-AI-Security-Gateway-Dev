@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -13,14 +14,15 @@ from ..schemas.file_review import FileReviewHit, FileReviewResult
 from ..schemas.file_review_runtime import ExtractedDocument
 from .guardrails.business_sensitive_scanner import (
     BUSINESS_SENSITIVE_CATEGORIES,
-    BedrockBusinessSensitiveClient,
     BusinessSensitiveCategory,
-    OllamaClient,
+    BusinessSensitiveResult,
+    BusinessSensitiveRuntimeConfig,
+    BusinessSensitiveScanner,
 )
 
 logger = logging.getLogger(__name__)
 
-FILE_REVIEW_CHUNK_CHAR_LIMIT = 1000
+FILE_REVIEW_CHUNK_CHAR_LIMIT = 12000
 
 INSURANCE_CONTEXT_RE = re.compile(
     r"(保险|保单|投保|被保险|受益人|保费|理赔|承保|核保|保险责任|免赔|"
@@ -52,28 +54,53 @@ class FileReviewChunkResult(BaseModel):
 
 
 class FileReviewScanner:
-    def __init__(self) -> None:
+    def __init__(self, db=None) -> None:
         settings = get_settings()
-        self.enabled = settings.file_review_enabled
-        self.provider = (settings.file_review_provider or "ollama").strip().lower()
-        self.model = (
-            settings.file_review_bedrock_model
-            if self.provider == "bedrock"
-            else settings.file_review_model
+        self.enabled = settings.file_review_enabled and settings.business_sensitive_enabled
+        self.business_scanner = BusinessSensitiveScanner()
+        self.runtime: BusinessSensitiveRuntimeConfig = self.business_scanner.resolve_runtime_config(db)
+        self.provider = self.runtime.provider
+        self.model = self.runtime.model
+        self.client = self.business_scanner._get_client(self.runtime)
+        self.chunk_workers = max(settings.file_review_chunk_workers, 1)
+        self.max_chunks = max(settings.file_review_max_chunks, 1)
+        self.chunk_char_limit = max(settings.file_review_chunk_char_limit, 1000)
+        self.chunk_overlap_chars = min(max(settings.file_review_chunk_overlap_chars, 0), self.chunk_char_limit - 1)
+
+    def supports_direct_file_review(self, mime_type: str) -> bool:
+        return self.runtime.provider == "openrouter" and (
+            mime_type == "application/pdf" or mime_type.startswith("image/")
         )
-        self.timeout_seconds = settings.file_review_timeout_seconds
-        if self.provider == "bedrock":
-            self.client = BedrockBusinessSensitiveClient(
-                region_name=settings.bedrock_region,
-                timeout_seconds=self.timeout_seconds,
-                model=self.model,
+
+    def review_file(self, *, filename: str, mime_type: str, content: bytes) -> FileReviewResult:
+        try:
+            result = self.business_scanner.scan_file_or_raise(
+                filename=filename, mime_type=mime_type, content=content, runtime=self.runtime,
             )
-        else:
-            self.client = OllamaClient(
-                base_url=settings.file_review_ollama_url,
-                timeout_seconds=self.timeout_seconds,
-                model=self.model,
+        except Exception as exc:
+            logger.warning("Direct multimodal file review failed for %s: %s", filename, exc)
+            return FileReviewResult(
+                review_decision="unknown", failed_locations=[filename],
+                summary="Multimodal business-sensitive review failed.", model=self.model,
+                evaluated_at=datetime.now(timezone.utc),
             )
+        return self._business_result_to_file_result(result, location=filename)
+
+    def _business_result_to_file_result(self, result: BusinessSensitiveResult, *, location: str) -> FileReviewResult:
+        hits = [FileReviewHit(
+            category=category.name, risk_level=result.risk_level, reason=category.reason,
+            matched_text=category.matched_text[:300], location=location,
+        ) for category in result.categories]
+        decision = "allow"
+        if result.contains_business_sensitive:
+            decision = "block" if result.risk_level == "high" else "needs_confirmation"
+        return FileReviewResult(
+            review_decision=decision, total_chunks=1, reviewed_chunks=1,
+            contains_business_sensitive=result.contains_business_sensitive,
+            risk_level=result.risk_level, summary=result.summary[:500], confidence=result.confidence,
+            categories=sorted({category.name for category in result.categories}), hits=hits[:30],
+            model=self.model, evaluated_at=datetime.now(timezone.utc),
+        )
 
     def review(self, document: ExtractedDocument) -> FileReviewResult:
         if not self.enabled:
@@ -93,13 +120,21 @@ class FileReviewScanner:
         summaries: list[str] = []
         categories: set[str] = set()
         chunks = self._build_review_chunks(segments)
+        max_chunks = getattr(self, "max_chunks", get_settings().file_review_max_chunks)
+        if len(chunks) > max_chunks:
+            return FileReviewResult(
+                review_decision="unknown", total_chunks=len(chunks),
+                failed_locations=[f"Document exceeds the {max_chunks}-chunk review limit."],
+                summary="Document is too large for complete business-sensitive review.",
+                model=self.model, evaluated_at=datetime.now(timezone.utc),
+            )
         failed_locations: list[str] = []
         reviewed_chunks = 0
 
-        for segment in chunks:
+        def evaluate(segment):
             store = getattr(self, "checkpoint_store", None)
             if store:
-                chunk_result = store.run("business", segment["location"], segment["text"].encode(),
+                return store.run("business", segment["location"], segment["text"].encode(),
                     lambda: self._review_segment(segment["location"], segment["text"]),
                     lambda value: value.model_dump(), FileReviewChunkResult.model_validate,
                     lambda value: value is not None and (not value.contains_business_sensitive or (
@@ -108,8 +143,16 @@ class FileReviewScanner:
                             and (not category.name.startswith("insurance_") or INSURANCE_CONTEXT_RE.search(segment["text"]))
                             for category in value.categories)
                     )))
-            else:
-                chunk_result = self._review_segment(segment["location"], segment["text"])
+            return self._review_segment(segment["location"], segment["text"])
+
+        workers = min(getattr(self, "chunk_workers", 1), max(len(chunks), 1))
+        if workers == 1:
+            chunk_results = [evaluate(segment) for segment in chunks]
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="file-business-review") as executor:
+                chunk_results = list(executor.map(evaluate, chunks))
+
+        for segment, chunk_result in zip(chunks, chunk_results):
             if chunk_result is None:
                 failed_locations.append(segment["location"])
                 continue
@@ -151,9 +194,8 @@ class FileReviewScanner:
 
         return FileReviewResult(
             review_decision=(
-                # The original bytes cannot be masked before transmission, so every
-                # confirmed business-sensitive finding blocks the attachment.
-                "block" if contains
+                "block" if contains and highest_risk == "high"
+                else "needs_confirmation" if contains
                 else "unknown" if failed_locations else "allow"
             ),
             total_chunks=len(chunks),
@@ -162,7 +204,7 @@ class FileReviewScanner:
             contains_business_sensitive=contains,
             risk_level=highest_risk,
             summary=("Review incomplete; some content could not be evaluated." if failed_locations
-                     else "; ".join(summaries[:8]) if summaries else "No business-sensitive content detected."),
+                     else "; ".join(summaries[:8])[:500] if summaries else "No business-sensitive content detected."),
             confidence=round(max_confidence, 4),
             categories=sorted(categories),
             hits=hits[:30],
@@ -171,6 +213,8 @@ class FileReviewScanner:
         )
 
     def _build_review_chunks(self, segments) -> list[dict[str, str]]:
+        chunk_limit = getattr(self, "chunk_char_limit", FILE_REVIEW_CHUNK_CHAR_LIMIT)
+        overlap = getattr(self, "chunk_overlap_chars", 500)
         chunks: list[dict[str, str]] = []
         current_parts: list[str] = []
         current_locations: list[str] = []
@@ -195,25 +239,25 @@ class FileReviewScanner:
             if not text:
                 continue
             location = segment.location or "Document"
-            if len(text) > FILE_REVIEW_CHUNK_CHAR_LIMIT:
+            if len(text) > chunk_limit:
                 flush()
                 # Overlap protects entities/phrases straddling a chunk boundary.
-                step = FILE_REVIEW_CHUNK_CHAR_LIMIT - 100
+                step = chunk_limit - overlap
                 for offset in range(0, len(text), step):
                     chunks.append({
-                        "location": f"{location} (chars {offset + 1}-{min(offset + FILE_REVIEW_CHUNK_CHAR_LIMIT, len(text))})",
-                        "text": text[offset:offset + FILE_REVIEW_CHUNK_CHAR_LIMIT],
+                        "location": f"{location} (chars {offset + 1}-{min(offset + chunk_limit, len(text))})",
+                        "text": text[offset:offset + chunk_limit],
                     })
-                    if offset + FILE_REVIEW_CHUNK_CHAR_LIMIT >= len(text):
+                    if offset + chunk_limit >= len(text):
                         break
                 continue
-            if current_parts and current_length + len(text) > FILE_REVIEW_CHUNK_CHAR_LIMIT:
+            if current_parts and current_length + len(text) > chunk_limit:
                 flush()
             current_parts.append(text)
             if location not in current_locations:
                 current_locations.append(location)
             current_length += len(text)
-            if current_length >= FILE_REVIEW_CHUNK_CHAR_LIMIT:
+            if current_length >= chunk_limit:
                 flush()
 
         flush()

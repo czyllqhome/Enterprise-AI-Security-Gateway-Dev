@@ -16,10 +16,10 @@
 - 已实现敏感信息识别、脱敏占位、提示注入检测、限制主题检测、源代码阻断和商务敏感内容扫描。
 - 已实现 OpenAI、阿里云百炼/Qwen、OpenRouter、AWS Bedrock 和 Ollama 模型提供商配置。
 - 已实现管理员控制台、扫描器开关/严格模式、扫描性能统计、审计日志、Token Usage 估算和 14 天趋势统计。
-- 已实现附件上传、原件哈希与 MIME 校验、Office/PDF/图片文本提取、OCR/视觉护栏，以及基于 PostgreSQL 持久任务和单元断点的异步原件审核。
+- 已实现附件上传、原件哈希与 MIME 校验、OpenRouter 图片/PDF 多模态商务敏感审核、Office 快速文字提取，以及基于 PostgreSQL 持久任务和单元断点的异步原件审核。
 - 文件提取、OCR 和视觉识别结果只用于本工具的安全与隐私审核；业务模型接收用户 Prompt 与审核通过的原文件，不会接收自动拼接的提取正文或审核摘要。
-- 后端使用 PostgreSQL 和 Alembic 迁移；启动时仍保留 `Base.metadata.create_all` 与兼容性补字段逻辑。
-- 当前后端包含文件权限和聊天扫描性能测试；前端暂未发现单元测试或 E2E 测试配置。
+- 后端应用运行时数据库统一使用 PostgreSQL 和 Alembic 迁移，不支持将 SQLite、SQL Server、MySQL 等数据库用于开发或生产运行；启动时仍保留 `Base.metadata.create_all` 与兼容性补字段逻辑。
+- 后端单元测试为提高隔离性和执行速度，部分使用进程内 SQLite；这些测试数据库不会进入应用运行路径。当前前端暂未配置单元测试或 E2E 测试。
 - 仓库中仍保留 `backend/app/static/` 旧静态页面资源，但主线前端已经迁移到 `frontend/`。
 
 ## 最近更新（2026-09）
@@ -32,16 +32,17 @@
 - 文件审核由进程内临时后台任务升级为 PostgreSQL 持久队列，支持任务租约、`SKIP LOCKED` 并发领取、失败重试和进程重启后的过期任务恢复。单进程开发默认使用内嵌 worker，多实例部署应使用独立 worker。
 - 上传接口限制请求大小并校验实际文件类型；文件审核不会静默截断长文档，模型或解析失败会得到 `unknown` 并禁止原件外发。
 - 新增原件 SHA-256、审核策略版本、发送快照和消息附件关系；确认发送时重新校验权限、策略、原件字节与预览快照，重复确认不会重复调用模型。
-- PDF 页面、图片帧和 Office 包内媒体可进入本地视觉护栏；Office 整页审核支持通过显式配置的 LibreOffice/soffice 隔离渲染，转换器不可用时保持失败关闭。
+- 图片/PDF 在选择 OpenRouter `qwen/qwen3.8-flash` 时先进行一次多模态商务敏感审核；现代 Office 使用本地原生文字提取，旧 `.doc` 不再支持，含未覆盖嵌入媒体的 Office 文件失败关闭。
 - OpenAI 兼容适配器通过 Responses 文件输入发送原件；只有 `ATTACHMENT_CAPABILITIES` 明确允许的模型/MIME 组合才可启用，其他适配器拒绝附件且不降级为提取文字。
 - 增加数据库连接池、聊天上下文 token/消息上限、会话查询上限和管理查询时间窗口，减少长会话和大数据量下的资源占用。
 - LLM 客户端增加复用缓存，OpenAI 兼容接口、AWS Bedrock 和 Ollama 均支持流式输出。
 - 新增扫描器资产预准备和基准脚本，部署前可提前准备本地 token 计数编码器，并验证 Qwen3Guard 实际运行设备及预热后的延迟。
-- Qwen3Guard 默认模型升级为 `Qwen/Qwen3Guard-Gen-4B`，设备选择改为 `auto`；模型权重必须完整下载后再启动或执行基准，CUDA 13.x 环境需要兼容的 NVIDIA 驱动。
+- Qwen3Guard 默认模型为 `Qwen/Qwen3Guard-Gen-4B`；本地模型设备由 `LOCAL_MODEL_DEVICE=auto|cpu|cuda` 统一选择，各扫描器可单独覆盖。模型权重必须完整下载后再启动或执行基准。
 - PaddleOCR 改用项目内独立的检测、识别和方向分类缓存目录，可清理截断的下载压缩包并自动重试一次；图片元数据改为稳定 JSON，避免浮点表示噪声误命中银行卡规则。
 - 原件审核会保留部分扫描结果：确定的安全命中仍然阻断，而任一必要扫描器降级且没有确定命中时保持 `unknown`，禁止发送原文件。
 - 阿里云百炼聊天模型加入 `qwen3.8-flash` 并移除 `qwen-plus`、`qwen3.6-plus`；Business Sensitive 百炼运行时切换为 `qwen3.8-flash`，已有旧配置会自动兼容。
-- 新增 Alembic 迁移 `20260824_0002`、`20260824_0003` 和 `20260825_0004`；升级代码后必须执行 `uv run alembic upgrade head`。
+- 审计日志现在记录每次用户 Prompt，并固化 `allowed`、`review` 或 `blocked` 处理结果；管理端和 `GET /api/logs` 均可按处理结果筛选，敏感内容仍只展示扫描后的脱敏版本。
+- 新增 Alembic 迁移 `20260824_0002`、`20260824_0003`、`20260825_0004` 和 `20260911_0005`；升级代码后必须执行 `uv run alembic upgrade head`。
 - 云部署 SOP 补充了前端、后端和数据库三层 AWS Security Group 规则，以及 Bedrock/外部模型、Ollama 和 PostgreSQL 的最小网络路径。
 
 ## 技术栈
@@ -73,7 +74,7 @@
 - 默认本地模型缓存：`backend/.model-cache/`
 - PromptInjection 和 BanTopics 默认共用本地 `Qwen/Qwen3Guard-Gen-4B`
 - 商务敏感扫描和文件审核默认依赖 Ollama `http://127.0.0.1:11434` 与模型 `qwen3.5:4b`
-- 商务敏感扫描也可在管理端切换到阿里云百炼 `qwen3.8-flash`
+- 商务敏感扫描也可在管理端切换到阿里云百炼 `qwen3.8-flash` 或 OpenRouter `qwen/qwen3.8-flash`
 
 ## 目录结构
 
@@ -128,6 +129,8 @@
 
 ## PostgreSQL 初始化
 
+应用运行时仅支持 PostgreSQL。`DATABASE_URL` 必须使用 `postgresql+psycopg://` 驱动；仓库测试中出现的 `sqlite+pysqlite:///:memory:` 仅用于隔离单元测试，不是可部署配置。
+
 使用 PostgreSQL 管理员账号连接：
 
 ```powershell
@@ -173,7 +176,10 @@ FILE_REVIEW_VISION_BASE_URL=http://127.0.0.1:11434
 QWEN3GUARD_ENABLED=true
 QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-4B
 QWEN3GUARD_MODEL_PATH=
-QWEN3GUARD_DEVICE=auto
+LOCAL_MODEL_DEVICE=auto
+QWEN3GUARD_DEVICE=inherit
+PRIVACY_FILTER_DEVICE=inherit
+FILE_OCR_DEVICE=inherit
 OFFICE_CONVERTER_PATH=
 DEFAULT_ADMIN_USERNAME=admin
 DEFAULT_ADMIN_PASSWORD=replace-with-a-strong-password
@@ -202,8 +208,11 @@ uv run python -c "from huggingface_hub import snapshot_download; snapshot_downlo
 ```env
 QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-0.6B
 QWEN3GUARD_MODEL_PATH=./.model-cache/qwen3guard/Qwen3Guard-Gen-0.6B
-QWEN3GUARD_DEVICE=cpu
+LOCAL_MODEL_DEVICE=cpu
+QWEN3GUARD_DEVICE=inherit
 ```
+
+对于 8 vCPU / 16 GiB 的 CPU-only EC2，建议同时将 Business Sensitive 切换到 OpenRouter、Qwen API 或 Bedrock，避免再常驻一个 Ollama 4B 模型；并设置 `QWEN3GUARD_WORKERS=1`、`FILE_REVIEW_CHUNK_WORKERS=1` 或 `2`。当前 BF16 Qwen3Guard 4B 权重约 8.82 GB，叠加约 5.2 GiB 的 Privacy Filter 权重、Python/PyTorch、OCR、数据库连接和操作系统内存后不具备可靠余量，因此不建议在 16 GiB 实例上与其他扫描器共同部署。0.6B CPU 配置是该规格的推荐起点。
 
 可在部署前运行扫描器基准，检查 Qwen3Guard 实际设备和预热后的 p50/p95 延迟：
 
@@ -294,7 +303,7 @@ npm run build
 - `GET /api/console/performance`
 - `GET /api/console/dashboard`
 - `GET /api/console/token-usage`
-- `GET /api/logs`
+- `GET /api/logs`（可用 `decision=allowed|review|blocked` 按处理结果筛选）
 - `GET /api/providers`
 - `POST /api/file-review/files/upload`
 
@@ -349,7 +358,7 @@ uv run python -m app.workers.file_review_worker
 
 - 扫描凭证：`SCAN_PROOF_SECRET`、`SCAN_PROOF_TTL_SECONDS`、`REQUIRE_SCAN_PROOF`
 - 扫描策略：`SCANNER_STRICT_MODE`、`SCANNER_TOTAL_DEADLINE_MS`、`SCANNER_EXECUTOR_WORKERS`
-- 扫描器资源：`PRIVACY_FILTER_TIMEOUT_MS`、`PRIVACY_FILTER_WORKERS`、`QWEN3GUARD_DEVICE`、`QWEN3GUARD_TIMEOUT_MS`、`QWEN3GUARD_WORKERS`、`BUSINESS_SENSITIVE_TIMEOUT_MS`、`BUSINESS_SENSITIVE_WORKERS`
+- 扫描器资源：`LOCAL_MODEL_DEVICE`、`PRIVACY_FILTER_DEVICE`、`PRIVACY_FILTER_TIMEOUT_MS`、`PRIVACY_FILTER_WORKERS`、`QWEN3GUARD_DEVICE`、`QWEN3GUARD_TIMEOUT_MS`、`QWEN3GUARD_WORKERS`、`FILE_OCR_DEVICE`、`BUSINESS_SENSITIVE_TIMEOUT_MS`、`BUSINESS_SENSITIVE_WORKERS`
 - 文件存储与队列：`FILE_REVIEW_ACTIVE_STORAGE_PROFILE`、`FILE_REVIEW_WINDOWS_STORAGE_PATH`、`FILE_REVIEW_LINUX_STORAGE_PATH`、`FILE_REVIEW_PER_USER_STORAGE_DIRS`、`FILE_REVIEW_WORKER_MODE`、`FILE_REVIEW_WORKER_POLL_SECONDS`、`FILE_REVIEW_JOB_LEASE_SECONDS`、`FILE_REVIEW_JOB_MAX_ATTEMPTS`
 - 原件与视觉能力：`ATTACHMENT_CAPABILITIES`、`FILE_REVIEW_VISION_MODEL`、`FILE_REVIEW_VISION_BASE_URL`、`FILE_REVIEW_VISION_TIMEOUT`、`OFFICE_CONVERTER_PATH`、`OFFICE_CONVERTER_TIMEOUT`
 - 数据库连接池：`DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT_SECONDS`、`DB_POOL_RECYCLE_SECONDS`
@@ -379,14 +388,14 @@ Set-Location backend
 uv run pytest
 ```
 
-测试覆盖聊天扫描凭证与并行性能、附件权限与原件传输、持久任务/租约/断点、Office 与视觉覆盖、PaddleOCR 缓存恢复、图片元数据安全序列化等场景。
+测试覆盖聊天扫描凭证与并行性能、全量 Prompt 日志、附件权限与原件传输、持久任务/租约/断点、Office 与视觉覆盖、PaddleOCR 缓存恢复、图片元数据安全序列化等场景。部分纯单元测试使用内存 SQLite 进行隔离；应用运行和部署仍只使用 PostgreSQL。
 
 前端当前仅配置了构建脚本，未发现单元测试或 E2E 测试脚本。
 
 ## 安全注意事项
 
 - `backend/.env` 包含密钥和数据库密码，不应提交到版本库。
-- `scan_events` 和高风险 `chat_logs` 可能保存原始敏感输入明文；处理真实数据前必须评估保留策略、加密策略和访问权限。
+- `chat_logs` 记录所有 Prompt 的扫描结果；敏感输入保存扫描后的脱敏版本，普通输入保持原文。`chat_messages` 等业务表仍可能包含确认发送时的原始输入，处理真实数据前必须评估保留、加密和访问权限。
 - Provider API Key 依赖 `API_KEY_ENCRYPTION_SECRET` 加密；部署后应保持密钥稳定并安全备份。
 - 默认 CORS 仅允许 `http://127.0.0.1:5173`，更换前端地址时需要同步更新 `CORS_ORIGINS`。
 - `Base.metadata.create_all` 和 Alembic 迁移同时存在；生产化前应明确数据库迁移策略，避免仅依赖自动建表。

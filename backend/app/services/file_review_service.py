@@ -29,7 +29,7 @@ from .system_setting_service import SystemSettingService
 from .attachment_integrity import sha256, verify_mime, review_policy_hash
 from ..models.attachment import AttachmentIdentity
 from .original_file_review import review_original_document
-from ..schemas.file_review_runtime import ExtractedSegmentPayload
+from ..schemas.file_review_runtime import ExtractedDocument, ExtractedSegmentPayload
 from ..models.review_job import ReviewJob
 from ..models.review_checkpoint import ReviewCheckpoint
 from .review_job_service import require_lease, ReviewLeaseLost, utc
@@ -53,7 +53,7 @@ class UploadedFilePayload:
 
 
 class FileReviewService:
-    ALLOWED_EXTENSIONS = {".doc", ".docx", ".xlsx", ".pptx", ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+    ALLOWED_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
     def __init__(self, db: Session):
         self.db = db
@@ -120,6 +120,10 @@ class FileReviewService:
     def create_uploaded_file(self, file: UploadedFilePayload, *, username: str | None = None) -> UploadedFileResponse:
         original_filename = file.filename or "upload"
         extension = Path(original_filename).suffix.lower()
+        if extension == ".doc":
+            raise FileReviewValidationError(
+                "Legacy .doc files are not supported. Save the document as .docx or PDF and upload it again."
+            )
         if extension not in self.ALLOWED_EXTENSIONS:
             raise FileReviewValidationError(f"Unsupported file type: {extension or 'unknown'}")
 
@@ -244,35 +248,60 @@ class FileReviewService:
             original_bytes = Path(record.storage_path).read_bytes()
             if sha256(original_bytes) != identity.sha256:
                 raise ValueError("Original file differs from the uploaded content.")
-            enabled = SystemSettingService(db).get_enabled_scanners()
-            policy = review_policy_hash(enabled)
+            settings_service = SystemSettingService(db)
+            enabled = settings_service.get_enabled_scanners()
+            business_config = settings_service.get_business_sensitive_config()
+            policy = review_policy_hash(enabled, business_config)
             original_hash = identity.sha256
             suffix = record.extension
             db.commit()
 
             extraction_service = FileExtractionService()
-            review_scanner = FileReviewScanner()
-            # Review a private byte-identical snapshot so filesystem edits cannot change the scan input.
-            with tempfile.TemporaryDirectory(prefix="gateway-review-") as directory:
-                review_path = Path(directory) / ("original" + suffix)
-                review_path.write_bytes(original_bytes)
-                extracted = extraction_service.extract(review_path)
-            extracted.segments.append(ExtractedSegmentPayload(location="Original filename", text=record.original_filename))
+            review_scanner = FileReviewScanner(db)
             from .guardrails.llm_guard_service import get_guardrail_service
             if lease_token:
                 job = require_lease(db, file_id, lease_token)
                 job.phase = "scanning"
                 db.commit()
             checkpoints = ReviewCheckpointStore(SessionLocal, file_id, original_hash, policy, lease_token) if lease_token else None
+            direct_result = None
+            if review_scanner.supports_direct_file_review(record.content_type):
+                evaluate_direct = lambda: review_scanner.review_file(
+                    filename=record.original_filename, mime_type=record.content_type, content=original_bytes,
+                )
+                if checkpoints:
+                    direct_result = checkpoints.run(
+                        "business_file", record.original_filename, original_bytes, evaluate_direct,
+                        lambda value: value.model_dump(mode="json"), FileReviewResult.model_validate,
+                        lambda value: value.review_decision in {"allow", "needs_confirmation", "block"},
+                    )
+                else:
+                    direct_result = evaluate_direct()
+
+            if direct_result is not None and direct_result.review_decision != "allow":
+                extracted = ExtractedDocument(
+                    summary="Direct multimodal business-sensitive review completed.", plain_text="",
+                    coverage_complete=True,
+                )
+            else:
+                # Review a private byte-identical snapshot so filesystem edits cannot change the scan input.
+                with tempfile.TemporaryDirectory(prefix="gateway-review-") as directory:
+                    review_path = Path(directory) / ("original" + suffix)
+                    review_path.write_bytes(original_bytes)
+                    extracted = extraction_service.extract(review_path)
+                extracted.segments.append(ExtractedSegmentPayload(location="Original filename", text=record.original_filename))
             review = review_original_document(extracted, review_scanner, get_guardrail_service(), enabled, db,
-                                              checkpoints=checkpoints)
+                                              checkpoints=checkpoints, business_result=direct_result)
             if lease_token:
                 require_lease(db, file_id, lease_token)
             db.refresh(record)
             db.refresh(identity)
             if (sha256(Path(record.storage_path).read_bytes()) != original_hash
                     or identity.sha256 != original_hash
-                    or review_policy_hash(SystemSettingService(db).get_enabled_scanners()) != policy):
+                    or review_policy_hash(
+                        SystemSettingService(db).get_enabled_scanners(),
+                        SystemSettingService(db).get_business_sensitive_config(),
+                    ) != policy):
                 raise ValueError("Original file or review policy changed during review.")
             identity.reviewed_sha256 = original_hash
             identity.review_policy = policy
@@ -351,7 +380,7 @@ class FileReviewService:
             ReviewCheckpoint.file_id == file_id).group_by(ReviewCheckpoint.state)).all())
         return {"id": file_id, "status": record.status, "phase": job.phase if job else record.status,
                 "review_decision": identity.decision if identity and identity.review_policy == review_policy_hash(
-                    self.setting_service.get_enabled_scanners()) else "unknown",
+                    self.setting_service.get_enabled_scanners(), self.setting_service.get_business_sensitive_config()) else "unknown",
                 "total_chunks": review.get("total_chunks", 0), "reviewed_chunks": review.get("reviewed_chunks", 0),
                 "total_visual_units": review.get("total_visual_units", 0),
                 "reviewed_visual_units": review.get("reviewed_visual_units", 0),
@@ -368,8 +397,9 @@ class FileReviewService:
         review = FileReviewResult.model_validate(review_payload) if review_payload else None
         identity = self.db.get(AttachmentIdentity, record.id)
         if review is not None and review.review_decision != "block" and (
-            identity is None or identity.decision != "allow" or identity.reviewed_sha256 != identity.sha256
-            or identity.review_policy != review_policy_hash(self.setting_service.get_enabled_scanners())
+            identity is None or identity.decision != review.review_decision or identity.reviewed_sha256 != identity.sha256
+            or identity.review_policy != review_policy_hash(
+                self.setting_service.get_enabled_scanners(), self.setting_service.get_business_sensitive_config())
         ):
             review.review_decision = "unknown"
             review.summary = "Original-file safety and privacy review is not complete. " + review.summary
@@ -392,6 +422,9 @@ class FileReviewService:
             extracted_text=record.extracted_text,
             extracted_segments=segments,
             review_result=review,
+            review_fingerprint=(sha256(json.dumps({"sha256": identity.sha256, "review": review_payload},
+                                                   sort_keys=True, default=str).encode())
+                                if identity is not None and review_payload else None),
             error_message=record.error_message,
             created_at=record.created_at,
             updated_at=record.updated_at,
@@ -403,8 +436,6 @@ class FileReviewService:
         if extension == ".pdf":
             return "pdf"
         if extension == ".docx":
-            return "word"
-        if extension == ".doc":
             return "word"
         if extension == ".xlsx":
             return "excel"

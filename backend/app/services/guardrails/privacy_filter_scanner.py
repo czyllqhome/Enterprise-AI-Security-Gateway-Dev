@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from ...core.config import BASE_DIR, get_settings
+from ...core.local_model_device import resolve_local_model_device
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,11 @@ class PrivacyFilterScanner:
         self.enabled = settings.privacy_filter_enabled
         self.auto_download = settings.privacy_filter_auto_download
         self.model_path = self._resolve_model_path(settings.privacy_filter_model_path)
-        self.device = self._resolve_device(settings.privacy_filter_device)
+        self.device = self._resolve_device(resolve_local_model_device(
+            settings.local_model_device,
+            settings.privacy_filter_device,
+            setting_name="PRIVACY_FILTER_DEVICE",
+        ))
         self.decode_mode = self._resolve_decode_mode(settings.privacy_filter_decode_mode)
         self.output_mode = self._resolve_output_mode(settings.privacy_filter_output_mode)
         self.context_window_length = (
@@ -275,6 +280,12 @@ class PrivacyFilterScanner:
     def _resolve_device(value: str) -> Literal["cpu", "cuda"]:
         normalized = (value or "auto").strip().lower()
         if normalized == "cuda":
+            try:
+                import torch
+            except Exception as exc:
+                raise RuntimeError("Privacy Filter requires a CUDA-capable PyTorch runtime.") from exc
+            if not torch.cuda.is_available():
+                raise RuntimeError("Privacy Filter requires CUDA but torch.cuda.is_available() is false.")
             return "cuda"
         # Keep OPF on CPU by default. Qwen3Guard owns the local GPU lane and
         # Windows OPF CUDA execution additionally requires Triton MoE kernels.

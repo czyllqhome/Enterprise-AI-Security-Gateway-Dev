@@ -20,10 +20,8 @@ def test_word_headers_and_empty_table_cells_are_in_review_inventory(tmp_path):
     result = extractor().extract(path)
     assert "HEADER_PRIVATE_MARKER" in result.plain_text
     assert any(segment.text == "Supplier |  | Amount" for segment in result.segments)
-    # The package thumbnail is itself part of the original and must be visually checked.
-    assert result.visual_units
-    assert not result.coverage_complete
-    assert any("Office rendering unavailable" in issue for issue in result.coverage_issues)
+    assert result.visual_units == []
+    assert result.coverage_complete
 
 
 def test_workbook_hidden_rows_and_formulas_are_reviewed(tmp_path):
@@ -42,11 +40,10 @@ def test_workbook_hidden_rows_and_formulas_are_reviewed(tmp_path):
     assert "HIDDEN_PRIVATE_MARKER" in result.plain_text
     assert "SUM(1,2)" in result.plain_text
     assert any(segment.text == "Item |  | Amount" for segment in result.segments)
-    assert not result.coverage_complete
-    assert any("Office rendering unavailable" in issue for issue in result.coverage_issues)
+    assert result.coverage_complete
 
 
-def test_slide_layout_requires_visual_rendering(tmp_path):
+def test_slide_native_text_does_not_require_visual_rendering(tmp_path):
     from pptx import Presentation
     path = tmp_path / "slides.pptx"
     presentation = Presentation()
@@ -55,5 +52,5 @@ def test_slide_layout_requires_visual_rendering(tmp_path):
     presentation.save(path)
     result = extractor().extract(path)
     assert "Public slide" in result.plain_text
-    assert not result.coverage_complete
-    assert any("Slide layouts" in issue for issue in result.coverage_issues)
+    assert result.coverage_complete
+    assert result.visual_units == []

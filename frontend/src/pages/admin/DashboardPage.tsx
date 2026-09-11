@@ -681,7 +681,7 @@ function GovernanceList({ data, onInsight, onLeave }: { data: DashboardData; onI
   const items = [
     { label: "Scanner coverage", value: `${data.governance.active_scanners}/${data.governance.total_scanners}`, count: data.governance.active_scanners, summary: "Enabled and available scanners protecting the gateway." },
     { label: "Configured providers", value: data.governance.configured_providers, count: data.governance.configured_providers, summary: "Model providers configured for controlled access." },
-    { label: "Sensitive audit logs", value: formatNumber(data.governance.audit_logs), count: data.governance.audit_logs, summary: "Immutable audit records available for review." },
+    { label: "Prompt audit logs", value: formatNumber(data.governance.audit_logs), count: data.governance.audit_logs, summary: "All prompt decisions available for review." },
     { label: "Reviewed uploads", value: formatNumber(data.governance.uploaded_files), count: data.governance.uploaded_files, summary: "Files processed by document review controls." },
     { label: "High-risk documents", value: data.governance.high_risk_files, count: data.governance.high_risk_files, summary: "Files carrying elevated policy or data leakage risk." },
   ];

@@ -10,8 +10,8 @@ The backend provides:
 - multi-turn chat sessions persisted in PostgreSQL
 - prompt scanning, sensitive-data masking, prompt-injection detection, and topic restrictions
 - OpenAI-compatible provider configuration for OpenAI, Qwen, OpenRouter, and Ollama
-- audit logs, scanner governance, management dashboards, and token usage estimates
-- Office, PDF, and image upload with immutable identity, extraction/OCR/visual guardrails, and asynchronous original-file review
+- complete prompt audit logs with allow/review/block filtering, scanner governance, management dashboards, and token usage estimates
+- Office, PDF, and image upload with immutable identity, multimodal business review, optimized extraction/OCR, and asynchronous original-file review
 - reviewed attachments can be referenced by `attachment_file_id`; extracted/OCR/review text stays inside the guardrail path while the downstream model receives the user prompt and approved original bytes
 - authenticated chat, session, provider, attachment, and administration APIs
 
@@ -20,9 +20,11 @@ The backend provides:
 - Python `3.11`
 - uv
 - PostgreSQL 18
-- Ollama with `qwen3.5:4b` for default business-sensitive and file review; Business Sensitive can also be switched to Aliyun Bailian `qwen3.8-flash`
+- Business Sensitive can use Ollama, Aliyun Bailian, AWS Bedrock, or OpenRouter `qwen/qwen3.8-flash`; configure the OpenRouter key from the admin API Key page
 
 ## PostgreSQL Setup
+
+PostgreSQL is the only supported runtime database. Application `DATABASE_URL` values must use the `postgresql+psycopg://` driver; SQLite, SQL Server, MySQL, and other database engines are not supported for development or production runtime. A small number of isolated unit tests use in-memory SQLite and do not exercise the application database configuration.
 
 Connect as the PostgreSQL administrator:
 
@@ -71,7 +73,10 @@ FILE_REVIEW_VISION_MODEL=qwen3.5:4b
 QWEN3GUARD_ENABLED=true
 QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-4B
 QWEN3GUARD_MODEL_PATH=
-QWEN3GUARD_DEVICE=auto
+LOCAL_MODEL_DEVICE=auto
+QWEN3GUARD_DEVICE=inherit
+PRIVACY_FILTER_DEVICE=inherit
+FILE_OCR_DEVICE=inherit
 ```
 
 The default admin is created only when `DEFAULT_ADMIN_PASSWORD` is non-empty and the configured username does not already exist.
@@ -94,7 +99,19 @@ The default Qwen3Guard model uses three BF16 weight shards totaling about 8.82 G
 uv run python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Qwen/Qwen3Guard-Gen-4B', local_dir='.model-cache/qwen3guard/Qwen3Guard-Gen-4B')"
 ```
 
-Verify that all three `model-0000x-of-00003.safetensors` files exist. This project currently installs the PyTorch CUDA 13.0 build, which requires an NVIDIA `580+` driver on Windows. For a lower-resource CPU fallback, use `Qwen/Qwen3Guard-Gen-0.6B`, set its completed local directory in `QWEN3GUARD_MODEL_PATH`, and set `QWEN3GUARD_DEVICE=cpu`.
+Verify that all three `model-0000x-of-00003.safetensors` files exist. `LOCAL_MODEL_DEVICE` accepts `auto`, `cpu`, or `cuda`; Qwen3Guard, Privacy Filter, and file OCR inherit it unless their component setting overrides it. In `auto` mode Qwen3Guard selects CUDA when available, while Privacy Filter and PaddleOCR remain on CPU for compatibility. Explicit `cuda` fails closed when the required CUDA runtime is unavailable. This project currently installs the PyTorch CUDA 13.0 build, which requires an NVIDIA `580+` driver on Windows.
+
+For a CPU-only host such as an EC2 C7i instance, use the smaller Qwen3Guard model and force every local scanner onto CPU:
+
+```env
+LOCAL_MODEL_DEVICE=cpu
+QWEN3GUARD_MODEL=Qwen/Qwen3Guard-Gen-0.6B
+QWEN3GUARD_MODEL_PATH=./.model-cache/qwen3guard/Qwen3Guard-Gen-0.6B
+QWEN3GUARD_DEVICE=inherit
+PRIVACY_FILTER_DEVICE=inherit
+FILE_OCR_DEVICE=inherit
+QWEN3GUARD_WORKERS=1
+```
 
 Verify warm scanner latency and the Qwen3Guard runtime device before deployment:
 
@@ -171,7 +188,7 @@ Invoke-RestMethod http://127.0.0.1:8002/api/health
 - `DELETE /api/file-review/files/{id}`
 - `GET /api/file-review/settings`
 - `PUT /api/file-review/settings`
-- `GET /api/logs`
+- `GET /api/logs` with optional `decision=allowed|review|blocked`
 - `GET /api/providers`
 
 ## Attachment Storage
@@ -190,14 +207,14 @@ Only the active runtime profile path is created on the current host. The inactiv
 The upload flow is intentionally split from model dispatch:
 
 1. `POST /api/file-review/files/upload` stores the original bytes, verifies MIME, records SHA-256/owner identity, and enqueues durable review work in PostgreSQL.
-2. The document worker creates internal text, OCR, page-image, Office-package, and optional rendered-page representations. These representations are used only by the gateway's visual, business-sensitive, privacy, and safety guardrails.
-3. Complete successful review writes an `allow` proof bound to the original hash and current policy. Missing coverage, timeout, unavailable scanners, invalid model responses, sensitive findings, or changed bytes produce `block` or `unknown`; neither can be sent.
+2. With OpenRouter `qwen/qwen3.8-flash`, image and PDF bytes are sent to OpenRouter for one multimodal Business Sensitive decision before local privacy checks. DOCX/XLSX/PPTX use fast native text extraction; legacy `.doc` is rejected.
+3. High-risk business content is blocked. Medium-risk content requires explicit send confirmation and skips the remaining file scanners. Clean business results continue through local OCR/text privacy and safety checks. Missing coverage, timeout, unavailable scanners, invalid model responses, or changed bytes fail closed.
 4. The frontend polls `GET /api/file-review/files/{file_id}/status`. Extracted text is hidden by default and may appear only in the collapsible audit detail.
 5. `POST /api/chat/preview` scans the user prompt without appending file-derived text, validates the target model/MIME capability, and creates a signed proof plus a server-side send snapshot.
 6. `POST /api/chat/confirm` rechecks the snapshot, one-use proof, authorization, policy, and original SHA-256. The provider adapter receives the user prompt and original file as separate inputs.
 7. There is no fallback that substitutes OCR or extracted text when the selected provider/model cannot accept the original format.
 
-Set `ATTACHMENT_CAPABILITIES` only for endpoint/model/MIME combinations verified against the real provider. Configure `FILE_REVIEW_VISION_MODEL` for local visual review and `OFFICE_CONVERTER_PATH` for isolated Office rendering. See [`ORIGINAL_ATTACHMENTS.md`](ORIGINAL_ATTACHMENTS.md) for the complete operational contract.
+Set `ATTACHMENT_CAPABILITIES` only for endpoint/model/MIME combinations verified against the real downstream provider. `FILE_REVIEW_VISION_*`, `OFFICE_CONVERTER_*`, and the separate `FILE_REVIEW_PROVIDER`/`FILE_REVIEW_MODEL` settings are retained only for configuration compatibility and are not used by the optimized review path. See [`ORIGINAL_ATTACHMENTS.md`](ORIGINAL_ATTACHMENTS.md) for the complete operational contract.
 
 ## Local Model Cache
 
@@ -222,10 +239,10 @@ From `backend/`:
 uv run pytest
 ```
 
-The repository includes original-byte transport, review completeness, visual/Office coverage, snapshot tampering, authorization, retry/lease, checkpoint, migration, and chat scan-proof regression tests.
+The repository includes complete prompt-log decisions, original-byte transport, review completeness, visual/Office coverage, snapshot tampering, authorization, retry/lease, checkpoint, migration, and chat scan-proof regression tests. Some isolated unit tests use in-memory SQLite for speed; deployed application services use PostgreSQL only.
 
 ## Security Notes
 
 - `backend/.env` contains secrets and database credentials. Do not commit it.
-- High-risk logs can store and display raw sensitive prompt content in plaintext.
+- `chat_logs` records every prompt decision and stores scanner-sanitized content; clean prompts are unchanged. Other business tables can still retain original confirmed input, so production deployments need an explicit data-retention policy.
 - Production deployments need a retention, encryption, backup, and access-control policy for PostgreSQL data.

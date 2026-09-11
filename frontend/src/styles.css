@@ -721,6 +721,80 @@ textarea:focus {
   padding: 10px 12px;
 }
 
+.business-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(4px);
+}
+
+.business-modal {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid #f59e0b;
+  border-radius: 18px;
+  padding: 24px;
+  background: var(--panel, #fff);
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.28);
+}
+
+.business-modal-head,
+.business-modal-meta,
+.business-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.business-modal-head h2,
+.business-modal-head p {
+  margin: 0;
+}
+
+.business-modal-findings {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.business-modal-findings article {
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.business-modal-meta {
+  justify-content: space-between;
+}
+
+.business-modal-findings ul {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+
+.business-modal-actions {
+  justify-content: flex-end;
+}
+
+.risk-high,
+.risk-medium,
+.risk-low {
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.risk-high { color: #991b1b; background: #fee2e2; }
+.risk-medium { color: #92400e; background: #fef3c7; }
+.risk-low { color: #166534; background: #dcfce7; }
+
 .nav-stack {
   display: grid;
   gap: 8px;
@@ -988,8 +1062,50 @@ textarea:focus {
   margin-bottom: 14px;
 }
 
+.log-toolbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 180px;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.log-toolbar .search-input {
+  margin-bottom: 0;
+}
+
 .log-row {
-  grid-template-columns: 130px minmax(0, 1fr) 220px 180px;
+  grid-template-columns: 130px minmax(0, 1fr) 96px 220px 180px;
+}
+
+.log-header {
+  color: #687980;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.log-decision {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  justify-content: center;
+  padding: 4px 9px;
+  width: fit-content;
+}
+
+.log-decision-allowed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.log-decision-review {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.log-decision-blocked {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .token-usage-shell {
@@ -1261,6 +1377,14 @@ textarea:focus {
   .log-row,
   .token-user-row {
     grid-template-columns: 1fr;
+  }
+
+  .log-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .log-header {
+    display: none;
   }
 
   .token-table-toolbar {

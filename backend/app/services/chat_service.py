@@ -14,7 +14,10 @@ from ..models.attachment import ChatSendSnapshot, MessageAttachment
 from ..core.config import get_settings
 from ..core.scan_proof import ScanProofError, canonical_json_digest, create_scan_proof, decode_scan_proof
 from ..schemas.guardrail import GuardrailEntity
-from ..schemas.messages import AssistantReplyResponse, ChatConfirmRequest, ChatPreviewRequest, ChatPreviewResponse
+from ..schemas.messages import (
+    AssistantReplyResponse, BusinessSensitiveFinding, ChatConfirmRequest, ChatPreviewRequest, ChatPreviewResponse,
+)
+from .guardrails.business_sensitive_scanner import BusinessSensitiveCategory, BusinessSensitiveResult
 from .guardrails.llm_guard_service import get_guardrail_service
 from .llm.openai_client import LLMProviderError
 from .llm.provider_factory import get_llm_client
@@ -62,6 +65,28 @@ class ChatService:
             )
         )
 
+    def _log_detected_types(self, scan, *, attachment_requires_confirmation: bool) -> list[str]:
+        detected_types = list(scan.entity_types or [])
+        if scan.bancode_triggered:
+            detected_types.append("SOURCE_CODE_ATTEMPT")
+        if scan.prompt_injection_triggered:
+            detected_types.append("PROMPT_INJECTION_ATTEMPT")
+        if scan.ban_topics_triggered:
+            detected_types.extend(
+                f"BAN_TOPIC:{topic}" for topic in (scan.banned_topics or ["restricted-topic"])
+            )
+        if scan.business_sensitive_result.contains_business_sensitive:
+            detected_types.extend(
+                [
+                    f"BUSINESS_SENSITIVE:{category.name}"
+                    for category in scan.business_sensitive_result.categories
+                ]
+                or ["BUSINESS_SENSITIVE"]
+            )
+        if attachment_requires_confirmation:
+            detected_types.append("BUSINESS_SENSITIVE_ATTACHMENT")
+        return list(dict.fromkeys(detected_types))
+
     def preview_message(self, payload: ChatPreviewRequest, username: str) -> ChatPreviewResponse:
         session = self.session_service.get_session(payload.session_id, username=username)
         session_id, session_provider, session_model = session.id, session.provider, session.model
@@ -70,7 +95,9 @@ class ChatService:
         message = payload.message.strip()
         if not message:
             raise GuardrailViolationError("A user prompt is required.")
-        attachments = self._read_attachments(payload.attachment_file_id, username)
+        attachments = self._read_attachments(payload.attachment_file_id, username, reviewable=True)
+        attachment_bindings = self._attachment_bindings(payload.attachment_file_id, username)
+        attachment_finding = self._attachment_business_finding(payload.attachment_file_id, username)
         llm_messages = self._build_llm_messages(session.id, username)
         llm_messages.append({"role": "user", "content": message, **({"attachments": attachments} if attachments else {})})
         get_llm_client(session.provider, db=self.db).validate_attachments(llm_messages, session.model)
@@ -95,12 +122,21 @@ class ChatService:
             business_runtime_unavailable=business_runtime_unavailable,
             strict_mode=strict_mode,
         )
+        findings = ([BusinessSensitiveFinding(source="prompt", result=scan.business_sensitive_result)]
+                    if scan.business_sensitive_result.contains_business_sensitive else [])
+        if attachment_finding is not None:
+            findings.append(attachment_finding)
+        attachment_requires_confirmation = any(
+            finding.source == "attachment" and finding.result.contains_business_sensitive
+            for finding in findings
+        )
         status = (
             "blocked"
             if self._should_block_scan(scan)
             else "needs_confirmation"
             if scan.has_sensitive_data
             or scan.business_sensitive_result.contains_business_sensitive
+            or attachment_requires_confirmation
             else "clean"
         )
         event = self.scan_event_service.create_preview_event(
@@ -112,37 +148,25 @@ class ChatService:
             blocked_reason=scan.blocked_reason,
             scan=scan,
         )
-        if self._should_block_scan(scan):
-            detected_types: list[str] = []
-            if scan.bancode_triggered:
-                detected_types.append("SOURCE_CODE_ATTEMPT")
-            if scan.prompt_injection_triggered:
-                detected_types.append("PROMPT_INJECTION_ATTEMPT")
-            if scan.ban_topics_triggered:
-                detected_types.extend(
-                    [f"BAN_TOPIC:{topic}" for topic in (scan.banned_topics or ["restricted-topic"])],
-                )
-            if scan.business_sensitive_result.contains_business_sensitive:
-                detected_types.extend(
-                    [
-                        f"BUSINESS_SENSITIVE:{category.name}"
-                        for category in scan.business_sensitive_result.categories
-                    ]
-                    or ["BUSINESS_SENSITIVE"]
-                )
-            self.log_service.create_log(
-                session_id=session.id,
-                message_id=None,
-                username=username,
-                sanitized_content=scan.sanitized_text,
-                detected_entity_types=detected_types,
-            )
+        self.log_service.create_log(
+            session_id=session.id,
+            message_id=None,
+            scan_event_id=event.id,
+            username=username,
+            decision={"clean": "allowed", "needs_confirmation": "review", "blocked": "blocked"}[status],
+            sanitized_content=scan.sanitized_text,
+            detected_entity_types=self._log_detected_types(
+                scan,
+                attachment_requires_confirmation=attachment_requires_confirmation,
+            ),
+        )
         input_digest = self._scan_payload_digest(
             original_message=scan.original_text,
             sanitized_message=scan.sanitized_text,
             detected_entities=scan.entities,
             attachment_file_id=payload.attachment_file_id,
             enabled_scanners=scan.enabled_scanners,
+            attachment_bindings=attachment_bindings,
         )
         event.input_digest = input_digest
         event.scanner_config_hash = scanner_config_hash
@@ -162,7 +186,7 @@ class ChatService:
                 id=str(uuid4()), user_id=user.id, session_id=session_id, scan_event_id=event.id,
                 provider=session_provider, model=session_model, policy_hash=self._send_policy_hash(session_id),
                 prompt_hash=sha256(message.encode()), sanitized_prompt=scan.sanitized_text,
-                attachments_json=[{"file_id": a.file_id, "sha256": a.sha256} for a in attachments],
+                attachments_json=attachment_bindings,
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=15), state="ready",
             )
             self.db.add(snapshot)
@@ -186,6 +210,7 @@ class ChatService:
             enabled_scanners=scan.enabled_scanners,
             entity_types=scan.entity_types,
             business_sensitive_result=scan.business_sensitive_result,
+            business_sensitive_findings=findings,
             scan_proof=scan_proof if status != "blocked" else None,
             proof_expires_at=event.proof_expires_at if status != "blocked" else None,
             degraded_scanners=scan.degraded_scanners,
@@ -259,8 +284,9 @@ class ChatService:
         expected_ids = [entry["file_id"] for entry in snapshot.attachments_json]
         if expected_ids != ([payload.attachment_file_id] if payload.attachment_file_id is not None else []):
             raise ScanConfirmationError("Attachment differs from the approved preview.")
-        attachments = self._read_attachments(payload.attachment_file_id, username)
-        if [{"file_id": item.file_id, "sha256": item.sha256} for item in attachments] != snapshot.attachments_json:
+        attachments = self._read_attachments(payload.attachment_file_id, username, reviewable=True)
+        attachment_bindings = self._attachment_bindings(payload.attachment_file_id, username)
+        if attachment_bindings != snapshot.attachments_json:
             raise ScanConfirmationError("Original file changed; preview again.")
 
         enabled_scanners = self.setting_service.get_enabled_scanners()
@@ -271,6 +297,7 @@ class ChatService:
             original_message=original_message,
             enabled_scanners=enabled_scanners,
             strict_mode=strict_mode,
+            attachment_bindings=attachment_bindings,
         )
         sanitized_message = event.sanitized_input
         llm_messages, session_entities = self._build_llm_context(session.id, username)
@@ -308,14 +335,7 @@ class ChatService:
                 filename=attachment.filename,
             ))
         snapshot.user_message_id = user_message.id
-        if event.has_sensitive_data:
-            self.log_service.create_log(
-                session_id=session.id,
-                message_id=user_message.id,
-                username=username,
-                sanitized_content=sanitized_message,
-                detected_entity_types=[entity.type for entity in payload.detected_entities],
-            )
+        self.log_service.attach_message(scan_event_id=event.id, message_id=user_message.id)
         session_entities.extend(entity.model_dump() for entity in payload.detected_entities)
         self.db.commit()
         return {
@@ -390,6 +410,7 @@ class ChatService:
         original_message: str,
         enabled_scanners: list[str],
         strict_mode: bool,
+        attachment_bindings: list[dict],
     ):
         if payload.scan_event_id is None or not payload.scan_proof:
             raise ScanConfirmationError("A valid scan proof is required. Please scan the message again.")
@@ -414,6 +435,7 @@ class ChatService:
             detected_entities=payload.detected_entities,
             attachment_file_id=payload.attachment_file_id,
             enabled_scanners=enabled_scanners,
+            attachment_bindings=attachment_bindings,
         )
         try:
             claims = decode_scan_proof(payload.scan_proof)
@@ -447,6 +469,7 @@ class ChatService:
         detected_entities: list[GuardrailEntity],
         attachment_file_id: int | None,
         enabled_scanners: list[str],
+        attachment_bindings: list[dict] | None = None,
     ) -> str:
         return canonical_json_digest({
             "original_message": original_message,
@@ -454,15 +477,52 @@ class ChatService:
             "detected_entities": [entity.model_dump(mode="json") for entity in detected_entities],
             "attachment_file_id": attachment_file_id,
             "enabled_scanners": enabled_scanners,
+            "attachment_bindings": attachment_bindings or [],
         })
 
-    def _read_attachments(self, file_id: int | None, username: str):
+    def _read_attachments(self, file_id: int | None, username: str, *, reviewable: bool = False):
         if file_id is None:
             return []
         try:
-            return [AttachmentAccessService(self.db).read_approved(file_id, username)]
+            service = AttachmentAccessService(self.db)
+            reader = service.read_reviewable if reviewable else service.read_approved
+            return [reader(file_id, username)]
         except AttachmentAccessError as exc:
             raise GuardrailViolationError(str(exc)) from exc
+
+    def _attachment_bindings(self, file_id: int | None, username: str) -> list[dict]:
+        if file_id is None:
+            return []
+        try:
+            return [AttachmentAccessService(self.db).review_binding(file_id, username)]
+        except AttachmentAccessError as exc:
+            raise GuardrailViolationError(str(exc)) from exc
+
+    def _attachment_business_finding(self, file_id: int | None, username: str) -> BusinessSensitiveFinding | None:
+        if file_id is None:
+            return None
+        record = self._get_accessible_attachment(file_id, username=username)
+        payload = self._load_json_payload(record.review_result_json) or {}
+        if not payload.get("contains_business_sensitive"):
+            return None
+        categories = []
+        for hit in payload.get("hits") or []:
+            try:
+                categories.append(BusinessSensitiveCategory(
+                    name=hit.get("category"), matched_text=hit.get("matched_text", ""), reason=hit.get("reason", ""),
+                ))
+            except Exception:
+                continue
+        result = BusinessSensitiveResult(
+            contains_business_sensitive=True,
+            risk_level=payload.get("risk_level", "medium"),
+            categories=categories,
+            summary=payload.get("summary", "检测到商务敏感内容。"),
+            confidence=payload.get("confidence", 0.0),
+        )
+        return BusinessSensitiveFinding(
+            source="attachment", file_id=record.id, filename=record.original_filename, result=result,
+        )
 
     def _send_policy_hash(self, session_id: int) -> str:
         history = self.db.scalars(select(ChatMessage).where(ChatMessage.session_id == session_id)
@@ -523,7 +583,7 @@ class ChatService:
             attachments = []
             for reference in message.attachments:
                 try:
-                    attachments.append(AttachmentAccessService(self.db).read_approved(
+                    attachments.append(AttachmentAccessService(self.db).read_confirmed(
                         reference.file_id, username, reference.sha256,
                     ))
                 except AttachmentAccessError as exc:

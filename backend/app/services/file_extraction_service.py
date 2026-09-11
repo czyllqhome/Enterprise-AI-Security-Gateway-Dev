@@ -42,7 +42,7 @@ class UnsupportedFileTypeError(Exception):
 
 
 class FileExtractionService:
-    SUPPORTED_EXTENSIONS = {".doc", ".docx", ".xlsx", ".pptx", ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+    SUPPORTED_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
     def __init__(self, ocr_service: FileOCRService | None = None) -> None:
         self.ocr_service = ocr_service or FileOCRService()
@@ -53,13 +53,11 @@ class FileExtractionService:
         if extension not in self.SUPPORTED_EXTENSIONS:
             raise UnsupportedFileTypeError(f"Unsupported file type: {extension or 'unknown'}")
         if extension == ".docx":
-            return self._with_office_render(path, self._audit_office_package(path, self._extract_docx(path)))
-        if extension == ".doc":
-            return self._with_office_render(path, ExtractedDocument("Legacy Word requires rendering", ""))
+            return self._mark_office_media_coverage(path, self._extract_docx(path))
         if extension == ".xlsx":
-            return self._with_office_render(path, self._audit_office_package(path, self._extract_xlsx(path)))
+            return self._mark_office_media_coverage(path, self._extract_xlsx(path))
         if extension == ".pptx":
-            return self._with_office_render(path, self._audit_office_package(path, self._extract_pptx(path)))
+            return self._mark_office_media_coverage(path, self._extract_pptx(path))
         if extension == ".pdf":
             return self._extract_pdf(path)
         return self._extract_image(path)
@@ -72,6 +70,14 @@ class FileExtractionService:
         paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
         for index, text in enumerate(paragraphs, start=1):
             segments.append(ExtractedSegmentPayload(location=f"Paragraph {index}", text=text))
+
+        for section_index, section in enumerate(document.sections, start=1):
+            for area_name, area in (("Header", section.header), ("Footer", section.footer)):
+                text = "\n".join(paragraph.text.strip() for paragraph in area.paragraphs if paragraph.text.strip())
+                if text:
+                    segments.append(ExtractedSegmentPayload(
+                        location=f"Section {section_index} {area_name}", text=text, source_kind="header_footer",
+                    ))
 
         for table_index, table in enumerate(document.tables, start=1):
             for row_index, row in enumerate(table.rows, start=1):
@@ -88,12 +94,14 @@ class FileExtractionService:
                 )
 
         combined = "\n".join(segment.text for segment in segments)
-        return ExtractedDocument(summary=f"{len(segments)} extracted segments", plain_text=combined, segments=segments)
+        return ExtractedDocument(summary=f"{len(segments)} extracted segments", plain_text=combined,
+                                 segments=segments, coverage_complete=bool(segments),
+                                 coverage_issues=[] if segments else ["No extractable Office text was found."])
 
     def _extract_xlsx(self, path: Path) -> ExtractedDocument:
         from openpyxl import load_workbook
 
-        workbook = load_workbook(filename=path, read_only=True, data_only=True)
+        workbook = load_workbook(filename=path, read_only=True, data_only=False)
         segments: list[ExtractedSegmentPayload] = []
         for sheet in workbook.worksheets:
             for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
@@ -112,7 +120,21 @@ class FileExtractionService:
 
         workbook.close()
         combined = "\n".join(segment.text for segment in segments)
-        return ExtractedDocument(summary=f"{len(segments)} extracted rows", plain_text=combined, segments=segments)
+        return ExtractedDocument(summary=f"{len(segments)} extracted rows", plain_text=combined,
+                                 segments=segments, coverage_complete=bool(segments),
+                                 coverage_issues=[] if segments else ["No extractable Office text was found."])
+
+    def _mark_office_media_coverage(self, path: Path, extracted: ExtractedDocument) -> ExtractedDocument:
+        """Fast native-text path; unsupported embedded visuals fail closed instead of invoking a vision model."""
+        with zipfile.ZipFile(path) as archive:
+            media = [entry.filename for entry in archive.infolist()
+                     if not entry.is_dir() and "/media/" in entry.filename.lower()]
+        if media:
+            extracted.coverage_complete = False
+            extracted.coverage_issues.append(
+                "Embedded Office images are not reviewed in the fast text path; save the file as PDF and upload it again."
+            )
+        return extracted
 
     def _audit_office_package(self, path: Path, extracted: ExtractedDocument) -> ExtractedDocument:
         """Include hidden XML text, relationships, metadata and media in the guardrail inventory."""
@@ -212,28 +234,25 @@ class FileExtractionService:
                                 slide_number=slide_index,
                             )
                         )
-                if getattr(shape, "shape_type", None) == 13 and getattr(shape, "image", None):
-                    image_bytes = shape.image.blob
-                    ocr_text = self._ocr_bytes(image_bytes, suffix=f"-slide-{slide_index}.png")
-                    if ocr_text:
-                        segments.append(
-                            ExtractedSegmentPayload(
-                                location=f"Slide {slide_index} Image {shape_index}",
-                                text=ocr_text,
-                                slide_number=slide_index,
-                                source_kind="image_ocr",
-                            )
-                        )
+                if getattr(shape, "has_table", False):
+                    for row_index, row in enumerate(shape.table.rows, start=1):
+                        text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                        if text:
+                            segments.append(ExtractedSegmentPayload(
+                                location=f"Slide {slide_index} Table {shape_index} Row {row_index}", text=text,
+                                slide_number=slide_index, source_kind="table",
+                            ))
 
         combined = "\n".join(segment.text for segment in segments)
-        return ExtractedDocument(summary=f"{len(segments)} extracted slide items", plain_text=combined, segments=segments)
+        return ExtractedDocument(summary=f"{len(segments)} extracted slide items", plain_text=combined,
+                                 segments=segments, coverage_complete=bool(segments),
+                                 coverage_issues=[] if segments else ["No extractable Office text was found."])
 
     def _extract_pdf(self, path: Path) -> ExtractedDocument:
         import fitz
 
         segments: list[ExtractedSegmentPayload] = []
         issues: list[str] = []
-        visuals: list[VisualReviewUnit] = []
         with fitz.open(path) as document:
             if document.needs_pass:
                 raise ValueError("Encrypted PDFs cannot be reviewed.")
@@ -262,7 +281,6 @@ class FileExtractionService:
                     try:
                         pixmap = page.get_pixmap(dpi=160)
                         image_bytes = pixmap.tobytes("png")
-                        visuals.append(VisualReviewUnit(f"Page {page_index}", image_bytes))
                         ocr_text = self._ocr_bytes(image_bytes, suffix=".png")
                         if ocr_text:
                             segments.append(ExtractedSegmentPayload(location=f"Page {page_index} OCR", text=ocr_text,
@@ -272,29 +290,22 @@ class FileExtractionService:
         combined = "\n".join(segment.text for segment in segments)
         return ExtractedDocument(summary=f"{len(segments)} extracted PDF items", plain_text=combined,
                                  segments=segments, coverage_complete=not issues, coverage_issues=issues,
-                                 visual_units=visuals)
+                                 visual_units=[])
 
     def _extract_image(self, path: Path) -> ExtractedDocument:
-        from PIL import Image, ImageOps
+        from PIL import Image
         text = self.ocr_service.image_to_text(path)
         segment = ExtractedSegmentPayload(location="Image", text=text, source_kind="image_ocr")
         segments = [segment] if text else []
-        visuals = []
-        issues = []
         with Image.open(path) as image:
-            metadata = _serialize_image_metadata(image)
-            segments.append(ExtractedSegmentPayload(location="Image metadata", text=metadata))
             frames = getattr(image, "n_frames", 1)
             if frames > 200:
                 raise ValueError("Image exceeds the 200-frame review budget.")
-            for index in range(frames):
-                image.seek(index)
-                buffer = io.BytesIO()
-                ImageOps.exif_transpose(image).convert("RGB").save(buffer, format="PNG")
-                visuals.append(VisualReviewUnit(f"Image frame {index + 1}", buffer.getvalue()))
-        return ExtractedDocument(summary=f"{len(visuals)} frames require visual review", plain_text=text,
+        issues = [] if text and frames == 1 else (["Local OCR found no readable image text."] if not text
+                                                   else ["Animated or multi-frame images are not fully covered."])
+        return ExtractedDocument(summary="Image text extracted with one local OCR pass", plain_text=text,
                                  segments=segments, coverage_complete=not issues,
-                                 coverage_issues=issues, visual_units=visuals)
+                                 coverage_issues=issues, visual_units=[])
 
     def _ocr_bytes(self, payload: bytes, *, suffix: str) -> str:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:

@@ -2,7 +2,7 @@ import io
 
 import pytest
 
-from app.services.attachment_integrity import verify_mime, sha256
+from app.services.attachment_integrity import review_policy_hash, verify_mime, sha256
 from app.models.attachment import AttachmentIdentity
 from app.services.attachment_access_service import AttachmentAccessService, AttachmentAccessError
 from test_file_review_permissions import db_session, create_user, create_completed_uploaded_file, pdf_bytes
@@ -33,11 +33,22 @@ def test_image_mime_cannot_be_disguised():
         verify_mime("file.jpg", buffer.getvalue())
 
 
-def test_legacy_word_magic_is_verified_without_conversion():
+def test_legacy_word_is_rejected():
     content = bytes.fromhex("D0CF11E0A1B11AE1") + b"original legacy content"
-    assert verify_mime("file.doc", content) == "application/msword"
+    with pytest.raises(ValueError, match="not supported"):
+        verify_mime("file.doc", content)
     with pytest.raises(ValueError):
         verify_mime("file.doc", b"not an OLE document")
+
+
+def test_business_runtime_change_invalidates_review_policy():
+    scanners = ["business_sensitive", "privacy"]
+    first = review_policy_hash(scanners, {"provider": "openrouter", "model": "qwen/qwen3.8-flash"})
+    changed_model = review_policy_hash(scanners, {"provider": "openrouter", "model": "another-model"})
+    changed_provider = review_policy_hash(scanners, {"provider": "ollama", "model": "qwen3.5:4b"})
+
+    assert first != changed_model
+    assert first != changed_provider
 
 
 def test_identity_owner_is_authoritative(db_session):

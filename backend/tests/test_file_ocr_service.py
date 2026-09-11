@@ -8,6 +8,7 @@ def service_with_paths(det: Path, rec: Path, cls: Path) -> FileOCRService:
     service = FileOCRService.__new__(FileOCRService)
     service._ocr_engine = None
     service._load_error = None
+    service.device = "cpu"
     service.settings = SimpleNamespace(
         file_ocr_det_model_dir=str(det),
         file_ocr_rec_model_dir=str(rec),
@@ -29,6 +30,7 @@ def test_corrupt_cached_archive_is_removed_before_engine_start(tmp_path, monkeyp
             assert kwargs["det_model_dir"] == str(det.resolve())
             assert kwargs["rec_model_dir"] == str(rec.resolve())
             assert kwargs["cls_model_dir"] == str(cls_dir.resolve())
+            assert kwargs["use_gpu"] is False
             return engine
 
     monkeypatch.setitem(__import__("sys").modules, "torch", SimpleNamespace())

@@ -4,7 +4,7 @@ import type { BusinessSensitiveScannerConfig, ConsoleScannersResponse, Scanner }
 import { PageTitle } from "./DashboardPage";
 
 const toggleableScanners = new Set(["bancode", "prompt_injection", "ban_topics", "privacy_filter", "business_sensitive", "custom_regex"]);
-type BusinessSensitiveProvider = "ollama" | "qwen" | "bedrock";
+type BusinessSensitiveProvider = "ollama" | "qwen" | "openrouter" | "bedrock";
 
 export function ScannersPage() {
   const [scanners, setScanners] = useState<Scanner[]>([]);

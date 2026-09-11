@@ -546,6 +546,7 @@ class GuardrailService:
             "qwen3guard_model": getattr(self._qwen3guard_scanner, "model_reference", None),
             "qwen3guard_device": getattr(self._qwen3guard_scanner, "runtime_device", None),
             "privacy_filter_model": getattr(self._privacy_filter_scanner, "model_reference", None),
+            "privacy_filter_device": getattr(self._privacy_filter_scanner, "device", None),
             "business_sensitive": business_runtime_payload,
         }
         return hashlib.sha256(
@@ -619,6 +620,7 @@ class GuardrailService:
         bancode_model = self._get_model_path(self._bancode_scanner) or "LLM Guard BanCode heuristic fallback"
         ban_topics_model = getattr(self._qwen3guard_scanner, "model_reference", None) or DEFAULT_QWEN3GUARD_MODEL
         privacy_filter_model = getattr(self._privacy_filter_scanner, "model_reference", None) or "local checkpoint unavailable"
+        privacy_filter_device = getattr(self._privacy_filter_scanner, "device", None) or "unavailable"
 
         return {
             "BanCode": (
@@ -638,7 +640,7 @@ class GuardrailService:
             ),
             PRIVACY_FILTER_SCANNER_NAME: (
                 "Model: Privacy Filter local checkpoint "
-                f"{privacy_filter_model}. "
+                f"{privacy_filter_model} on {privacy_filter_device}. "
                 "Detects PII and secrets across 8 labels; Custom Regex remains as the offline fallback."
             ),
             "Business Sensitive": (
