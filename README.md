@@ -222,6 +222,8 @@ uv run python scripts/benchmark_scanners.py --samples 5
 
 ## 部署时数据库迁移
 
+单台 AWS Ubuntu EC2 的完整部署步骤（包含从 `codex/original-attachment-security` 分支 clone、PostgreSQL、systemd、Nginx、HTTPS、验收、升级和回滚）见 [`docs/aws-ubuntu-ec2-deployment-sop.md`](docs/aws-ubuntu-ec2-deployment-sop.md)。原有三服务器拓扑继续参见 [`docs/cloud-deployment-sop.md`](docs/cloud-deployment-sop.md)。
+
 部署到服务器或云主机后，先确认服务器上的 `backend/.env` 已配置生产数据库的 `DATABASE_URL`，然后在后端目录执行 Alembic 迁移：
 
 ```bash
